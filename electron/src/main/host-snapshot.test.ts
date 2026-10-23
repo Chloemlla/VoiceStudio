@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,3 +59,54 @@ it('survives a hung or throwing GPU probe', async () => {
   expect(thrown.gpu).toBeNull();
   expect(thrown.runtime.pythonPresent).toBeNull();
 });
+
+it('reads free disk from the nearest existing ancestor on first run', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'host-snapshot-'));
+  try {
+    const snapshot = await collectHostSnapshot({
+      platform: 'linux',
+      runtimeProject: join(dir, 'not', 'created', 'yet'),
+      runtimePython: null,
+      uv: null,
+    });
+    expect(snapshot.diskFreeGb).toBeGreaterThan(0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+it('reports uv missing only when the search completed with no result', async () => {
+  const searched = await collectHostSnapshot({
+    runtimeProject: null,
+    runtimePython: null,
+    uv: async () => null,
+  });
+  const unchecked = await collectHostSnapshot({
+    runtimeProject: null,
+    runtimePython: null,
+    uv: null,
+  });
+  expect(searched.runtime.uvPresent).toBe(false);
+  expect(unchecked.runtime.uvPresent).toBeNull();
+});
+
+it('validates the caller before the host snapshot IPC reads anything', () => {
+  const source = readFileSync(join(__dirname, 'ipc.ts'), 'utf8');
+  const handler = source.split('CHANNELS.backendHostSnapshot,')[1]?.split('ipcMain.handle')[0] ?? '';
+  expect(handler).toContain('assertTrustedMainFrame(event, ');
+});
+
+it('does not let a hung tool search or stat stall the snapshot', async () => {
+  const hungSearch = await collectHostSnapshot({
+    runtimeProject: null,
+    runtimePython: null,
+    uv: () => new Promise(() => {}),
+  });
+  expect(hungSearch.runtime.uvPresent).toBeNull();
+  const found = await collectHostSnapshot({
+    runtimeProject: null,
+    runtimePython: null,
+    uv: async () => '/usr/bin/uv',
+  });
+  expect(found.runtime.uvPresent).toBe(true);
+}, 8000);
