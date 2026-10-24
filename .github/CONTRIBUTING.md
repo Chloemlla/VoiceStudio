@@ -155,8 +155,9 @@ Open an [issue](https://github.com/debpalash/VoiceStudio/issues/new) with:
 2. **Keep PRs focused** — one feature or fix per PR
 3. **Run tests** before pushing:
    ```bash
-   # Backend tests (the same two runs as CI)
-   uv run pytest tests/ -q
+   # Backend tests (the same two runs as CI; -n auto runs tests/ in parallel,
+   # optional locally, it is about 4x faster on 4 cores)
+   uv run pytest tests/ -q -n auto
    uv run pytest backend/tests/ -q
 
    # Frontend build check
@@ -426,6 +427,11 @@ hard rules from the first prompt.
     account features off sends one best-effort token revocation. Hidden in
     packaged builds until VoiceStudio Cloud launches.
   - Bug reports as prefilled GitHub Issue URLs opened in the user's browser.
+  - **Phone content reports, only when the user taps Send** in a generated
+    result's Report sheet: `appapi.voicestudio.sh/v1/content-reports` with the
+    reason, optional note and typed text, app version and model; no audio,
+    account or device identifier (`mobile/contract/SPEC.md` → Reporting
+    generated content; required by Google Play's AI-generated content policy).
   - PostHog analytics only after a yes at the first-run consent prompt
     (`backend/core/analytics.py`, allowlisted content-free metadata).
   - The GitHub star count (no credentials or referrer, refreshed every 20
