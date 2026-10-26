@@ -236,7 +236,8 @@ If `uv` times out fetching the python-build-standalone tarball or PyPI:
 # Use a faster Python source mirror (China only — verify a current mirror)
 export UV_PYTHON_INSTALL_MIRROR=https://gh-proxy.com/https://github.com/astral-sh/python-build-standalone/releases/download
 
-# Use a PyPI mirror
+# Use a PyPI mirror (source checkouts that resolve packages themselves; the
+# locked dependency install downloads the wheel URLs pinned in uv.lock)
 export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Or skip the download entirely if you have a compatible system Python
@@ -251,6 +252,8 @@ Packaged setup already tries a Python download mirror and raises the uv
 network budget automatically; set these to force a specific mirror, or before
 `bun run setup:api` in a source checkout. See
 [troubleshooting](troubleshooting.md#first-run-setup-fails-on-a-restricted-network-githubpypi-blocked).
+If the dependency download is slow or stalls, see
+[First-run setup is slow or stalls on a download](troubleshooting.md#first-run-setup-is-slow-or-stalls-on-a-download).
 
 ## AMD GPU (ROCm)
 
@@ -264,9 +267,16 @@ on CPU until you opt into the ROCm variant.
 > **Running in Docker or Podman instead?** There's a prebuilt ROCm image —
 > `ghcr.io/debpalash/voicestudio:stable-rocm` — with GPU acceleration out of the
 > box; see [docker.md](docker.md#pull-and-run-amd-gpu--rocm). The rest of this
-> section is about source/desktop installs. (VoiceStudio has no ROCm path on
-Windows; see [windows.md](windows.md#gpu-support) for what a Radeon card can
-do there.)
+> section is about source/desktop installs. Windows has its own opt-in ROCm
+> setup; see [windows-rocm.md](windows-rocm.md).
+
+**Radeon RX 9000 series (RDNA4: RX 9060 / 9070 / 9070 XT, `gfx1200`/`gfx1201`)**
+is supported natively by the ROCm build below (torch 2.8.0 from the `rocm6.4`
+index includes both architectures), so it needs no `HSA_OVERRIDE_GFX_VERSION`.
+The host needs an `amdgpu` kernel driver new enough for RDNA4 (AMD's ROCm
+6.4.1+ driver, or a recent distribution kernel); `rocminfo` listing your card
+as `gfx1200`/`gfx1201` confirms it. Never remap an RDNA4 card onto `11.0.0`:
+RDNA3 kernels cannot run on it.
 
 Ways to opt in, in order of preference:
 
@@ -325,8 +335,12 @@ Notes:
 - ROCm is exercised far less than the default CUDA/MPS/CPU paths — it works,
   but expect rough edges on consumer cards and report what you hit.
 - Unsupported GFX (e.g. some consumer RDNA cards): if it still won't run, set
-  `HSA_OVERRIDE_GFX_VERSION` yourself (e.g. `export HSA_OVERRIDE_GFX_VERSION=11.0.0`)
-  to the nearest supported architecture before launching.
+  `HSA_OVERRIDE_GFX_VERSION` yourself to a supported architecture **of the same
+  generation** before launching (e.g. `export HSA_OVERRIDE_GFX_VERSION=11.0.0`
+  for a gfx11xx card, `10.3.0` for gfx10xx). A remap across generations cannot
+  work, so RDNA4 (gfx12xx) cards need a ROCm build that lists them instead.
+  When the build lacks your card, VoiceStudio's GPU architecture notification
+  names the exact value to try, or says that no remap exists.
 - ZLUDA (CUDA-on-ROCm translation) can work but is unsupported here — prefer a
   native ROCm wheel.
 
