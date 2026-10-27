@@ -12,7 +12,9 @@
     <a href="#文档">文档</a> ·
     <a href="https://discord.gg/bzQavDfVV9">Discord</a> ·
     <a href="../../README.md">English</a> ·
-    <a href="README_JA.md">日本語</a>
+    <a href="README_JA.md">日本語</a> ·
+    <a href="README_KO.md">한국어</a> ·
+    <a href="README_RU.md">Русский</a>
   </p>
   <p>
     <a href="https://github.com/debpalash/VoiceStudio/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/debpalash/VoiceStudio/ci.yml?branch=main" alt="CI" /></a>
@@ -80,7 +82,9 @@ curl -fsSL https://voicestudio.sh/install | sh -s -- --uninstall
 
 从 [Releases](https://github.com/debpalash/VoiceStudio/releases/latest) 下载，然后阅读对应平台的安装指南：
 
-**[macOS](../../docs/install/macos.md) · [Windows](../../docs/install/windows.md) · [Linux](../../docs/install/linux.md) · [Docker](../../docs/install/docker.md)**
+**[macOS](../../docs/install/macos.md) · [Windows](../../docs/install/windows.md) · [Linux](../../docs/install/linux.md) · [Docker](../../docs/install/docker.md) · [Android 和 iPhone](../../docs/mobile.md#install)**
+
+Linux 也可以通过 Snap Store 安装：`sudo snap install voicestudio`。Android（`.apk`）和 iPhone（`.ipa`，需用自己的 Apple ID 侧载）的安装包与桌面安装程序一同发布。
 
 打开**声音克隆**，选择已有声音或添加清晰的参考录音，输入文字并生成。按提示安装所需模型。硬件要求因引擎而异，详见[性能指南](../../docs/performance.md)。
 

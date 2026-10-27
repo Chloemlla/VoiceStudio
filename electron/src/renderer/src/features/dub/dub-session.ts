@@ -25,6 +25,9 @@ import { publicFailureFromEvent, type PublicFailure } from '@/lib/api/failure';
 import {
   assignSpeakerProfile,
   applySpeakerCloneDefaults,
+  autoProfileId,
+  castParts,
+  castSpeakers,
   cueSourceId,
   segmentGenInputs,
   settleCueSources,
@@ -47,6 +50,7 @@ import {
 } from '@shared/utils/segmentParts';
 import { commitMoveResize } from '@shared/utils/timeline';
 import type { PasteTranslationRow } from '@shared/utils/pasteTranslations';
+import { getDubTranslationError } from './transcript-issues';
 import type {
   DubAgentTranslationRequest,
   DubAgentTranslationResult,
@@ -510,6 +514,15 @@ const patchSegment = (segment: DubSegment, value: Partial<DubSegment>) => {
   const next = fields.some((field) => QC_INVALIDATING_FIELDS.has(field))
     ? { ...invalidateQc(base), ...value, id: segment.id }
     : { ...base, ...value, id: segment.id };
+  if (value.translations && next.translate_errors) {
+    const errors = { ...next.translate_errors };
+    for (const [language, text] of Object.entries(value.translations)) {
+      if (text !== segment.translations?.[language]) delete errors[language];
+    }
+    next.translate_errors = Object.keys(errors).length ? errors : undefined;
+    // Removing the last saved failure must not revive the legacy fallback.
+    if (!next.translate_errors) delete next.translate_error;
+  }
   if (segment.merge_parts && fields.some((field) => MERGE_PART_FIELDS.has(field))) {
     next.merge_parts = undefined;
     if (fields.some((field) => ATTRIBUTION_FIELD_NAMES.has(field)))
@@ -590,6 +603,56 @@ export function assignDubSpeakerProfile(speakerId: string, profileId: string) {
   if (changed) commitSegmentEdit(next);
 }
 
+/** The next unused `Speaker N` label, matching the backend's default
+ *  speaker naming (`Speaker 1` when diarization found no one). */
+export function nextDubSpeakerId(segments: DubSegment[]): string {
+  const taken = new Set(castSpeakers(segments) as string[]);
+  let n = taken.size + 1;
+  while (taken.has(`Speaker ${n}`)) n += 1;
+  return `Speaker ${n}`;
+}
+
+/**
+ * Move lines to another speaker (#3515, #3419). A line that followed its old
+ * speaker's voice (no explicit voice, that speaker's `auto:` clone, or the
+ * voice the old speaker is cast with) follows the new speaker's voice; a voice
+ * the user picked for that line on purpose stays. Mirrors the backend's
+ * re-analysis rebind rule so manual and automatic speaker fixes agree.
+ */
+export function setDubSegmentsSpeaker(ids: ReadonlySet<string>, speakerId: string) {
+  const speaker = speakerId.trim();
+  if (!ids.size || !speaker) return;
+  const current = dubSession.state.segments;
+  // A speaker's cast voice is read the way the casting board shows it (its
+  // first row), over every row: excluding the moved rows would lose the cast
+  // voice when a whole speaker is selected.
+  const castVoice = (name: string) => {
+    const row = current.find((segment) => segment.speaker_id === name);
+    if (row) return row.profile_id || '';
+    const part = current
+      .flatMap(
+        (segment) => castParts(segment) as Array<{ speaker_id?: string; profile_id?: string }>,
+      )
+      .find((item) => item.speaker_id === name);
+    return part ? part.profile_id || '' : undefined;
+  };
+  const targetVoice = castVoice(speaker) ?? '';
+  let changed = false;
+  const next = current.map((segment) => {
+    if (!ids.has(segment.id) || segment.speaker_id === speaker) return segment;
+    changed = true;
+    const oldSpeaker = segment.speaker_id || 'Speaker 1';
+    const voice = segment.profile_id || '';
+    const followsSpeaker =
+      !voice || voice === autoProfileId(oldSpeaker) || voice === castVoice(oldSpeaker);
+    return patchSegment(segment, {
+      speaker_id: speaker,
+      ...(followsSpeaker ? { profile_id: targetVoice || undefined } : {}),
+    });
+  });
+  if (changed) commitSegmentEdit(next);
+}
+
 export function replaceDubSegmentTexts(
   updates: ReadonlyArray<{ id: string; text: string }>,
   targetCode?: string,
@@ -628,12 +691,17 @@ export function applyDubTranslationRows(targetCode: string, rows: PasteTranslati
   let changed = false;
   const next = dubSession.state.segments.map((segment) => {
     const text = mapped.get(segment.id);
-    if (!text || (segment.text === text && segment.translations?.[targetCode] === text))
+    const failed = getDubTranslationError(segment, targetCode);
+    if (!text || (segment.text === text && segment.translations?.[targetCode] === text && !failed))
       return segment;
     changed = true;
+    // Accepting replacement text also resolves a failed attempt with identical text.
+    const errors = { ...segment.translate_errors };
+    delete errors[targetCode];
     return patchSegment(segment, {
       text,
       translations: { ...segment.translations, [targetCode]: text },
+      translate_errors: Object.keys(errors).length ? errors : undefined,
     });
   });
   return changed ? commitSegmentEdit(next) : false;

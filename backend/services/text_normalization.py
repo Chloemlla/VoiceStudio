@@ -22,7 +22,7 @@ Design rules (load-bearing):
     display name from electron/src/shared/languages.json or an ISO-ish code — both
     resolve via :func:`_num2words_lang`), or through a hand-written native
     verbalizer for languages num2words lacks (``_NATIVE_VERBALIZERS``, e.g.
-    Malayalam). Everything else keeps its digits.
+    Malayalam, Urdu). Everything else keeps its digits.
     Clock times / ordinals / currency are English-only (their spoken form is
     language-specific); decimals only for locales whose num2words rendering
     was vetted. CJK scripts pass through the safety filters untouched — no
@@ -81,6 +81,7 @@ ENV_VAR = "OMNIVOICE_TEXT_NORMALIZATION"
 _FULL_NAME_TO_CODE = {
     "english": "en",
     "malayalam": "ml",
+    "urdu": "ur",
     "german": "de",
     "spanish": "es",
     "french": "fr",
@@ -324,6 +325,148 @@ _UNSAFE_CONTROL_CODEPOINTS = frozenset(
 _UNSAFE_CONTROL_TRANSLATION = dict.fromkeys(_UNSAFE_CONTROL_CODEPOINTS)
 
 
+# Markdown emphasis delimiters (``**bold**``, ``__bold__``, ``*italic*``,
+# ``_italic_``) reach the engine as spoken words ("asterisk", #3197): a lone
+# ``*`` pair happens to survive as emphasis, but ``**`` is read aloud.
+#
+# Boundaries (#3205 review): ``*``/``**`` need whitespace flanks only — a
+# non-space after the opener, a non-space before the closer — because
+# CommonMark lets asterisks open inside words (``un**believ**able``). ``_``/
+# ``__`` additionally refuse word characters on the outer side, so
+# ``snake_case`` and ``foo__bar__baz`` survive. Arithmetic (``2 * 3 * 4``)
+# survives via the whitespace rule, and ``2*3*4`` via a digit-flank rule.
+# Bodies span soft line breaks.
+#
+# Linear single-pass scan (#3205 P1): lazy ``(.+?)`` backtracks quadratically
+# on unmatched openers (``"**a " * 25000`` stalls synthesis), so delimiters
+# are tokenized once per class and paired left-to-right — a token pairs as a
+# closer when a pending opener exists, else opens, else is stray and kept.
+# Result assembly is one join over retained slices: rebuilding per span is
+# itself quadratic on many matched pairs. Idempotent: a second pass finds no
+# pairs. Bracket spans are masked during the match so emphasis around a
+# speech control (``**Hello [pause 300ms] world**``) strips while the control
+# survives; NUL placeholders are safe because the safety filters deleted NUL.
+# Word characters are Unicode-aware (``str.isalnum`` plus combining marks, as
+# for Malayalam) so ``имя_файла`` keeps its underscores like ``snake_case``.
+
+
+def _is_wordch(ch: str) -> bool:
+    return (
+        ch == "_"
+        or ch.isalnum()
+        or unicodedata.combining(ch) != 0
+        or unicodedata.category(ch) in ("Mc", "Me")
+    )
+
+
+def _delim_tokens(text: str, ch: str) -> list[tuple[int, int, int, int]]:
+    """Split each maximal run of ch into ``**`` tokens then at most one ``*``.
+
+    ``***`` → one ``**`` plus one ``*`` so bold+italic nests resolve across
+    the two passes instead of stranding the run. Each token carries its run's
+    bounds so flank checks are O(1) (rescanning a long run per token is
+    quadratic on ``"__**__**" * N``).
+    """
+    toks: list[tuple[int, int, int, int]] = []
+    for m in re.finditer(re.escape(ch) + "+", text):
+        rs, re_ = m.start(), m.end()
+        # ``\*`` is an escaped literal: the first marker of the run is text.
+        k = rs
+        while k > 0 and text[k - 1] == "\\":
+            k -= 1
+        if (rs - k) % 2:
+            rs += 1
+            if rs >= re_:
+                continue
+        s, n = rs, re_ - rs
+        while n > 3:
+            toks.append((s, 2, rs, re_))
+            s += 2
+            n -= 2
+        if n == 3:
+            toks.append((s, 2, rs, re_))
+            toks.append((s + 2, 1, rs, re_))
+        else:
+            toks.append((s, n, rs, re_))
+    return toks
+
+
+def _open_ok(
+    text: str, tok: tuple[int, int, int, int], n: int, word_guarded: bool
+) -> bool:
+    s, L, rs, _re = tok
+    if s + L > n - 1 or text[s + L].isspace():
+        return False
+    # ``2*3*4`` is arithmetic, not emphasis: a digit on both sides of ``*``.
+    if not word_guarded and rs > 0 and text[rs - 1].isdigit() and text[s + L].isdigit():
+        return False
+    return not word_guarded or rs == 0 or not _is_wordch(text[rs - 1])
+
+
+def _close_ok(
+    text: str, tok: tuple[int, int, int, int], n: int, word_guarded: bool
+) -> bool:
+    s, _L, _rs, re_ = tok
+    if s == 0 or text[s - 1].isspace():
+        return False
+    if not word_guarded and re_ < n and text[s - 1].isdigit() and text[re_].isdigit():
+        return False
+    return not word_guarded or re_ >= n or not _is_wordch(text[re_])
+
+
+def _pair_spans(
+    text: str, tokens: list[tuple[int, int, int, int]], word_guarded: bool
+) -> list[tuple[int, int]]:
+    drop: list[tuple[int, int]] = []
+    # Stack, not a single slot: ``**outer **inner** outer**`` must pair the
+    # inner span first and still close the outer one (idempotent output).
+    stack: list[tuple[int, int]] = []
+    n = len(text)
+    for tok in tokens:
+        s, L = tok[0], tok[1]
+        if stack and _close_ok(text, tok, n, word_guarded):
+            os_, oL = stack.pop()
+            drop.append((os_, os_ + oL))
+            drop.append((s, s + L))
+        elif _open_ok(text, tok, n, word_guarded):
+            stack.append((s, L))
+    return drop
+
+
+def _delete_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """Remove ascending, non-overlapping spans with a single join."""
+    parts: list[str] = []
+    last = 0
+    for a, b in spans:
+        parts.append(text[last:a])
+        last = b
+    parts.append(text[last:])
+    return "".join(parts)
+
+
+_MASK_RE = re.compile("\x00(\\d+)\x00")
+
+
+def _strip_markdown_emphasis(text: str) -> str:
+    spans: list[str] = []
+
+    def _mask(m: re.Match) -> str:
+        spans.append(m.group(0))
+        return f"\x00{len(spans) - 1}\x00"
+
+    out = _BRACKET_SPAN_RE.sub(_mask, text)
+    for ch, guarded in (("*", False), ("_", True)):
+        for L in (1, 2):
+            toks = [t for t in _delim_tokens(out, ch) if t[1] == L]
+            out = _delete_spans(out, sorted(_pair_spans(out, toks, guarded)))
+    # One pass: a replace per span rescans the whole text (quadratic).
+    result = _MASK_RE.sub(lambda m: spans[int(m.group(1))], out)
+    if result != text:
+        # Removing markers can join punctuation ("!*!*!" -> "!!!!!"): re-cap.
+        result = _REPEAT_RE.sub(lambda m: m.group(1) * 3, result)
+    return result
+
+
 def _strip_unsafe_controls(text: str) -> str:
     """Delete only the explicitly enumerated unsafe Unicode controls."""
     return text.translate(_UNSAFE_CONTROL_TRANSLATION)
@@ -542,6 +685,24 @@ _DATE_MONTH_RE = {
     code: re.compile(r"\.\s+(?:" + months + r")(?![^\W_])", re.IGNORECASE)
     for code, months in _DATE_MONTHS.items()
 }
+# Space-grouped thousands ("1 234", "10 000", "1 234,5", "12 500 %") in the
+# locales that also group with a period. The run is kept as written, like
+# "1,000" in English; without this the percent and integer rules read the
+# trailing or leading group on its own. A leading minus ("-1 234 %") belongs
+# to the run; the lookbehind still rejects it after a word ("a-1 234").
+_SPACE_GROUP_RE = re.compile(
+    r"(?<![\w.,:/$%-])-?\d{1,3}(?: \d{3})+(?:,\d+)?(?:\s?%)?(?![\w:/%-])(?![.,]\d)"
+)
+
+
+def _grouped_spans(text: str, lang: str) -> list[tuple[int, int]]:
+    if lang not in _COMMA_DECIMAL_LANGS:
+        return []
+    return [g.span() for g in _SPACE_GROUP_RE.finditer(text)]
+
+
+def _in_span(m: re.Match, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= m.start() < end for start, end in spans)
 
 _ORDINAL_SUFFIX = {1: "st", 2: "nd", 3: "rd"}
 
@@ -632,18 +793,40 @@ def _numbers_to_words(text: str, lang: str, locale: Optional[str] = None) -> str
 
         text = _CURRENCY_RE.sub(lambda m: _safe(m, _currency), text)
 
+    def _spoken_decimal(whole: str, fraction: str) -> str:
+        spoken = num2words(float(f"{whole}.{fraction}"), lang=lang)
+        # A float has no trailing zeros: "3.0" read as "three" and "2.50"
+        # as "two point five". Speak the zeros that were written.
+        # Unicode digits (fullwidth, Arabic-Indic) count as zeros too.
+        ascii_fraction = "".join(str(unicodedata.digit(c, 0)) for c in fraction)
+        zeros = len(ascii_fraction) - len(ascii_fraction.rstrip("0"))
+        if zeros:
+            from num2words import CONVERTER_CLASSES
+            point = getattr(CONVERTER_CLASSES.get(n2w_locale), "pointword", None)
+            if not isinstance(point, str):
+                return spoken
+            zero = num2words(0, lang=lang)
+            if zeros == len(ascii_fraction):
+                spoken = f"{num2words(int(whole), lang=lang)} {point}"
+            spoken += f" {zero}" * zeros
+        return spoken
+
     percent_word = _PERCENT_WORD.get(lang)
     if percent_word:
+        grouped = _grouped_spans(text, lang)
+
         def _percent(m: re.Match) -> str:
+            if _in_span(m, grouped):
+                return m.group(0)
             raw = m.group(1)
             if "." in raw:
                 fraction = raw.split(".", 1)[1]
                 if lang not in _DECIMAL_LANGS or _thousands_group(lang, fraction):
                     return m.group(0)
-                value: object = float(raw)
+                spoken = _spoken_decimal(raw.split(".", 1)[0], fraction)
             else:
-                value = int(raw)
-            return f"{num2words(value, lang=lang)} {percent_word}"
+                spoken = num2words(int(raw), lang=lang)
+            return f"{spoken} {percent_word}"
 
         text = _PERCENT_RE.sub(lambda m: _safe(m, _percent), text)
 
@@ -652,30 +835,18 @@ def _numbers_to_words(text: str, lang: str, locale: Optional[str] = None) -> str
             whole, fraction = m.group(1), m.group(2)
             if _thousands_group(lang, fraction):
                 return m.group(0)
-            spoken = num2words(float(f"{whole}.{fraction}"), lang=lang)
-            # A float has no trailing zeros: "3.0" read as "three" and "2.50"
-            # as "two point five". Speak the zeros that were written.
-            # Unicode digits (fullwidth, Arabic-Indic) count as zeros too.
-            ascii_fraction = "".join(str(unicodedata.digit(c, 0)) for c in fraction)
-            zeros = len(ascii_fraction) - len(ascii_fraction.rstrip("0"))
-            if zeros:
-                from num2words import CONVERTER_CLASSES
-                point = getattr(CONVERTER_CLASSES.get(n2w_locale), "pointword", None)
-                if not isinstance(point, str):
-                    return spoken
-                zero = num2words(0, lang=lang)
-                if zeros == len(ascii_fraction):
-                    spoken = f"{num2words(int(whole), lang=lang)} {point}"
-                spoken += f" {zero}" * zeros
-            return spoken
+            return _spoken_decimal(whole, fraction)
 
         text = _DECIMAL_RE.sub(lambda m: _safe(m, _decimal), text)
 
     month_re = _DATE_MONTH_RE.get(lang)
+    grouped = _grouped_spans(text, lang)
 
     def _integer(m: re.Match) -> str:
         raw = m.group(1)
         if _leading_zero(raw):
+            return m.group(0)
+        if _in_span(m, grouped):
             return m.group(0)
         n = int(raw)
         if month_re and 1 <= n <= 31 and month_re.match(text, m.end()):
@@ -699,9 +870,14 @@ def _numbers_to_words(text: str, lang: str, locale: Optional[str] = None) -> str
 # rendering is a hand-written module. Malayalam (ml) is the first: num2words
 # ships bn/kn/te but no ml, so Malayalam dubs reached the engine with raw
 # digits. Each module exposes ``cardinal(int)``, ``decimal(int, str)`` and
-# ``percent(str)``; any exception leaves that occurrence untouched.
+# ``percent(str)``; any exception leaves that occurrence untouched. Urdu (ur)
+# followed for the same reason: OmniVoice read "1956" as "انیس سو سپنس", while
+# the sentence spelled out in Urdu words came back with 0% CER.
 
-_NATIVE_VERBALIZERS = {"ml": "services.number_words_ml"}
+_NATIVE_VERBALIZERS = {
+    "ml": "services.number_words_ml",
+    "ur": "services.number_words_ur",
+}
 
 
 def _native_lang(language: Optional[str]) -> Optional[str]:
@@ -748,6 +924,7 @@ def normalize_text(text: str, language: Optional[str] = None) -> str:
     if not text:
         return text or ""
     out = _safety_filters(text)
+    out = _strip_markdown_emphasis(out)
     # Runs outside the num2words gate below: ko/ja/zh keep their digits (that
     # gate returns None for them) but still need the range mark spoken.
     plain = _plain_lang_code(language)

@@ -64,6 +64,10 @@ _CHANGE_CASES = [
     # decimal here (the same digits are a thousands group in German, below).
     ("English", "pi is 3.141 here", "pi is three point one four one here"),
     ("English", "battery at 50%", "battery at fifty percent"),
+    # ...and so are the ones written in a percentage.
+    ("English", "rates rose 2.50% today", "rates rose two point five zero percent today"),
+    ("English", "inflation was 3.0%", "inflation was three point zero percent"),
+    ("German", "etwa 3.50%", "etwa drei Komma fünf null Prozent"),
     ("English", "back in 1984", "back in nineteen eighty-four"),
     ("English", "I have 3.", "I have three."),
     # EN abbreviations (guards: titles need a following capitalized word)
@@ -98,6 +102,16 @@ _CHANGE_CASES = [
     ("Spanish", "el Sr. García", "el Señor García"),
     ("French", "il a 42 chats", "il a quarante-deux chats"),
     ("French", "Mme Dupont arrive", "Madame Dupont arrive"),
+    # Numbers around a space-grouped amount still speak; the group itself
+    # keeps its digits.
+    ("French", "2 colis de 1 234 pièces", "deux colis de 1 234 pièces"),
+    # A year is not a leading group: four digits never start one.
+    ("French", "en 2024 500 personnes", "en deux mille vingt-quatre cinq cents personnes"),
+    # Narrow and no-break spaces (what French keyboards and word processors
+    # insert) collapse to a plain space, and the group stays whole.
+    ("French", "soit 1\u202f234\u00a0567 euros", "soit 1 234 567 euros"),
+    # English keeps reading separate numbers: "2 100" is not a group there.
+    ("English", "room 2 100 meters away", "room two one hundred meters away"),
     ("Russian", "у меня 42 кота", "у меня сорок два кота"),
     # Malayalam goes through the native verbalizer (num2words has no ml
     # locale): cardinals with sandhi, years as plain cardinals, Indian
@@ -116,6 +130,24 @@ _CHANGE_CASES = [
     ("Malayalam", "[pause 300ms] 42 [voice:Anu]", "[pause 300ms] നാൽപത്തിരണ്ട് [voice:Anu]"),
     # Native Malayalam digits are digits too.
     ("Malayalam", "൪൨ പേർ", "നാൽപത്തിരണ്ട് പേർ"),
+    # Urdu goes through the native verbalizer too (num2words has no ur
+    # locale): an irregular 0-99 table, سو / ہزار / لاکھ, and 1100-1999 read in
+    # hundreds the way Urdu speakers say years ("انیس سو چھپن", not the
+    # "انیس سو سپنس" OmniVoice produced from raw digits).
+    ("Urdu", "سن 1956 میں 10 لوگ", "سن انیس سو چھپن میں دس لوگ"),
+    ("Urdu", "عمر 55 سال", "عمر پچپن سال"),
+    ("Urdu", "قیمت 150 روپے", "قیمت ایک سو پچاس روپے"),
+    ("Urdu", "سال 2026 میں", "سال دو ہزار چھبیس میں"),
+    ("Urdu", "سال 2000 تک", "سال دو ہزار تک"),
+    ("Urdu", "1000 لوگ", "ایک ہزار لوگ"),
+    ("Urdu", "150000 روپے", "ایک لاکھ پچاس ہزار روپے"),
+    ("Urdu", "تقریباً 50%", "تقریباً پچاس فیصد"),
+    ("Urdu", "3.5 کلومیٹر", "تین اعشاریہ پانچ کلومیٹر"),
+    ("ur", "عمر 55 سال", "عمر پچپن سال"),
+    ("ur-PK", "عمر 55 سال", "عمر پچپن سال"),
+    ("Urdu", "[pause 300ms] 42 [voice:Ali]", "[pause 300ms] بیالیس [voice:Ali]"),
+    # Urdu (Extended Arabic-Indic) digits are digits too.
+    ("Urdu", "سن ۱۹۵۶ میں", "سن انیس سو چھپن میں"),
     # Digit ranges: the tilde has to be SPOKEN or the engine mashes the two
     # numbers into one ("20~30초" was read as "이십삼"). Spacing is part of the
     # per-language form — a Korean postposition binds to its numeral, Japanese
@@ -136,6 +168,29 @@ _CHANGE_CASES = [
     (None, "a�b", "ab"),
     (None, "Tom &amp; Jerry", "Tom & Jerry"),
     (None, "one&nbsp;space", "one space"),
+    # Markdown emphasis delimiters are stripped, not spoken (#3197)
+    ("English", "Say **bold** word", "Say bold word"),
+    ("English", "Say __bold__ word", "Say bold word"),
+    ("English", "Say *italic* word", "Say italic word"),
+    ("English", "Say _italic_ word", "Say italic word"),
+    ("English", "**bold** and **more** here", "bold and more here"),
+    # Digits still verbalize around a surviving arithmetic asterisk
+    ("English", "2 * 3 = 6", "two * three = six"),
+    ("English", "2 * 3 * 4 equals", "two * three * four equals"),
+    # Emphasis spans soft line breaks
+    ("English", "Say **first line\nsecond line** now", "Say first line\nsecond line now"),
+    # Emphasis around a speech control strips; the control survives
+    ("English", "**Hello [pause 300ms] world**", "Hello [pause 300ms] world"),
+    # Asterisks open inside words (CommonMark); underscores do not
+    ("English", "un**believ**able now", "unbelievable now"),
+    ("English", "pre*fix* this", "prefix this"),
+    ("English", "___bold___ here", "bold here"),
+    # Nested spans resolve fully, so a second pass is a no-op
+    ("English", "**outer **inner** outer**", "outer inner outer"),
+    # Escaped markers are literal text and stay put
+    (None, "\\*literal\\* word", "\\*literal\\* word"),
+    # Removing markers must not leave punctuation above the repeat cap
+    (None, "wow!*!*!*!*!", "wow!!!"),
 ]
 
 
@@ -214,6 +269,18 @@ _UNCHANGED_CASES = [
     ("Finnish", "3. toukokuuta"),
     ("Czech", "3. května"),
     ("Polish", "3. maja"),
+    # A space between a 1-3 digit group and 3-digit groups is the other
+    # thousands separator in those locales ("1 234", "10 000"): kept whole,
+    # digits and all. The integer rule used to read the leading group on
+    # its own ("un 234,5", "dix 000 habitants").
+    ("French", "Il a 1 234,5 euros."),
+    ("French", "Population : 10 000 habitants."),
+    ("German", "Das sind 1 234 Euro."),
+    ("Russian", "Это 1 234 рубля."),
+    ("French", "soit 12 500% du total"),         # the percent rule shares it
+    ("French", "soit 1 234 % du total"),
+    ("French", "une baisse de -1 234% du total"),  # a sign stays on the run
+    ("French", "soit -12 500 euros"),
     # Malayalam native path keeps the same conservative boundaries
     ("Malayalam", "1,000 രൂപ"),                  # thousands separator
     ("Malayalam", "പേജ് 3-5 വായിക്കുക"),           # range
@@ -226,6 +293,13 @@ _UNCHANGED_CASES = [
     ("Malayalam", "ക്ലാസ്10 ജയിച്ചു"),
     ("Malayalam", "കോടി150"),
     ("Malayalam", "കോഡ് ൦൦൭"),                    # native leading-zero code
+    # Urdu native path keeps the same conservative boundaries
+    ("Urdu", "1,000 روپے"),                       # thousands separator
+    ("Urdu", "صفحہ 3-5 پڑھیں"),                   # range
+    ("Urdu", "کوڈ 007"),                          # leading-zero code
+    ("Urdu", "کوڈ ۰۰۷"),                          # native leading-zero code
+    ("Urdu", "1234567 نمبر"),                     # 7+ digits: an ID
+    ("Urdu", "ورژن 3.5.1"),                       # version string
     ("ar", "الرمز ٠٠٧"),                         # same class on the num2words path
     # Digit ranges: only the tilde family is a range mark. Everything else that
     # sits between digits means something other than "to".
@@ -254,6 +328,14 @@ _UNCHANGED_CASES = [
     # Bracket grammar is never rewritten
     ("English", "[pause 300ms] then [rate 0.9] speech [voice:Alice]"),
     ("English", "[[term|5]] stays bracket-managed"),
+    # Unpaired markers and non-delimiter uses survive (#3197)
+    ("English", "use snake_case names"),
+    ("English", "foo__bar__baz here"),
+    ("English", "имя_файла_здесь test"),
+    ("English", "a lone * stays"),
+    # Unspaced arithmetic keeps its multiplication signs
+    (None, "2*3*4 and 10**2"),
+    ("English", "[**bold**] markers inside brackets stay untouched"),
     # Plain text is byte-identical
     ("English", "The quick brown fox jumps."),
     (None, "already clean text"),
@@ -320,6 +402,58 @@ def test_native_language_is_outside_num2words_gate():
     assert _native_lang("English") is None
 
 
+def test_urdu_verbalizer_covers_full_integer_range():
+    """Every ≤ 6-digit integer renders in Urdu letters only: no digits, and
+    none of the Arabic look-alikes (ي ك ه ى) that TTS frontends treat as a
+    different language."""
+    from services import number_words_ur as ur
+    arabic_lookalikes = set("\u064a\u0643\u0647\u0649")
+    for n in range(1_000_000):
+        word = ur.cardinal(n)
+        assert word and not any(ch.isdigit() for ch in word), n
+        assert not arabic_lookalikes & set(word), n
+
+
+@pytest.mark.parametrize("n,expected", [
+    (0, "صفر"), (19, "انیس"), (29, "انتیس"), (49, "انچاس"), (55, "پچپن"),
+    (56, "چھپن"), (59, "انسٹھ"), (69, "انہتر"), (79, "اناسی"), (89, "نواسی"),
+    (99, "ننانوے"), (100, "ایک سو"), (999, "نو سو ننانوے"),
+    (1001, "ایک ہزار ایک"), (1099, "ایک ہزار ننانوے"),
+    (1100, "گیارہ سو"), (1947, "انیس سو سینتالیس"), (1999, "انیس سو ننانوے"),
+    (2001, "دو ہزار ایک"), (10_500, "دس ہزار پانچ سو"),
+    (100_000, "ایک لاکھ"), (101_956, "ایک لاکھ ایک ہزار نو سو چھپن"),
+    (999_999, "نو لاکھ ننانوے ہزار نو سو ننانوے"),
+])
+def test_urdu_cardinal_spot_checks(n, expected):
+    from services import number_words_ur as ur
+    assert ur.cardinal(n) == expected
+
+
+def test_urdu_decimal_and_percent():
+    from services import number_words_ur as ur
+    assert ur.decimal(0, "05") == "صفر اعشاریہ صفر پانچ"
+    assert ur.percent("2.5") == "دو اعشاریہ پانچ فیصد"
+    assert ur.percent("100") == "ایک سو فیصد"
+
+
+def test_urdu_language_is_outside_num2words_gate():
+    """ur resolves to the native path, never to num2words (no ur locale)."""
+    from services.text_normalization import _native_lang, _num2words_lang
+    assert _num2words_lang("Urdu") is None
+    assert _num2words_lang("ur") is None
+    assert _native_lang("Urdu") == "ur"
+    assert _native_lang("ur-PK") == "ur"
+
+
+def test_urdu_normalize_for_tts_leaves_no_digits():
+    # Resolved at run time: other suites purge and reload services.* modules.
+    from services.text_normalization import normalize_for_tts
+
+    out = normalize_for_tts("سن 1956 میں 10 لوگ", "ur")
+    assert out == "سن انیس سو چھپن میں دس لوگ"
+    assert not any(ch.isdigit() for ch in out)
+
+
 # ── Idempotency: f(f(x)) == f(x) for every table case ───────────────────────
 
 @pytest.mark.parametrize(
@@ -336,6 +470,40 @@ def test_idempotent_double_encoded_entity():
     # "&amp;nbsp;" must not decode one layer per pass.
     once = normalize_text("bad &amp;nbsp; soup", None)
     assert normalize_text(once, None) == once
+
+
+def test_many_unmatched_openers_stay_fast_and_untouched():
+    """Linear scan (#3205 P1): 25k unmatched ``**`` openers must not stall
+    synthesis. The lazy-regex version took ~16 s here; the scanner takes ms.
+    The 10 s bound has 700x headroom and only trips on quadratic blowup."""
+    import time
+    from services.text_normalization import _strip_markdown_emphasis
+    raw = "**a " * 25000
+    start = time.perf_counter()
+    assert _strip_markdown_emphasis(raw) == raw
+    assert time.perf_counter() - start < 10
+
+
+def test_many_matched_pairs_stay_fast():
+    """One-join assembly (#3205 P1): per-span string rebuilds are quadratic
+    on matched pairs (~22 s at this size); retained-slice join takes ms."""
+    import time
+    from services.text_normalization import _strip_markdown_emphasis
+    raw = "**a** " * 300000
+    start = time.perf_counter()
+    assert _strip_markdown_emphasis(raw) == "a " * 300000
+    assert time.perf_counter() - start < 10
+
+
+@pytest.mark.parametrize("raw", ["__**__**" * 25000, "[pause 300ms] x " * 20000])
+def test_long_runs_and_many_controls_stay_fast(raw):
+    """Run bounds are saved at tokenization and bracket spans restore in one
+    pass; per-token run rescans and per-span replaces were quadratic (#3205)."""
+    import time
+    from services.text_normalization import _strip_markdown_emphasis
+    start = time.perf_counter()
+    _strip_markdown_emphasis(raw)
+    assert time.perf_counter() - start < 10
 
 
 # ── Toggle: default ON + env override ────────────────────────────────────────

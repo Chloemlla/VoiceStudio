@@ -1680,6 +1680,11 @@ def get_best_device():
 
     # ── Intel Arc / discrete GPU via IPEX ────────────────────────────
     if family == "xpu":
+        # main.py installs this at startup; repeat (idempotent) for processes
+        # that load models without main.py, e.g. the OmniVoice subprocess.
+        from core.xpu_compat import patch_xpu_mem_get_info
+
+        patch_xpu_mem_get_info(torch)
         try:
             logger.info("Using Intel XPU device: %s", torch.xpu.get_device_name(0))
         except Exception:
@@ -3354,8 +3359,12 @@ def _release_idle_tts_memory(stage):
     eviction recipe cannot drift between them (#730/#1190)."""
     try:
         try:
-            from services.asr_backend import release_idle_capture_backend
+            from services.asr_backend import (
+                release_idle_capture_backend,
+                release_transcription_backend,
+            )
             release_idle_capture_backend(0.0)  # 0s idle = release if unleased
+            release_transcription_backend(0.0)
         except Exception:  # noqa: BLE001 -- best-effort, never blocks the caller
             logger.debug("capture-ASR pre-%s release failed", stage, exc_info=True)
         release_tts_side_caches()
@@ -3431,13 +3440,25 @@ def _checkpoint_in_local_cache(checkpoint: str) -> bool:
 async def preload_model():
     """Background model warm-up — call from lifespan startup.
 
-    Loads the TTS model on the GPU pool thread so the first /generate
-    call is near-instant instead of waiting 4-6s for weight loading.
+    Loads native OmniVoice on the GPU pool thread only when it is selected,
+    so its first /generate call avoids waiting for weight loading.
     Non-blocking: if models aren't installed yet, silently exits.
     """
     global model, _last_used
     if model is not None:
         return  # already loaded
+
+    # This singleton belongs to native OmniVoice, not the selected engine's
+    # adapter. Warming it for another engine wastes memory before first use.
+    try:
+        from services.tts_backend import active_backend_id
+
+        if active_backend_id() != "omnivoice":
+            logger.info("Native TTS preload skipped: another TTS engine is selected.")
+            return
+    except Exception:  # noqa: BLE001 -- optional warm-up must not guess an engine
+        logger.debug("TTS preload selection failed; skipping warm-up", exc_info=True)
+        return
 
     # On MPS the configured ``omnivoice`` id resolves to a crash-isolated
     # sidecar. Warming the native singleton here would put the same fatal MPS
@@ -3622,9 +3643,14 @@ async def idle_worker():
         # off while a live dictation stream has a lease, so nothing is unloaded
         # mid-sentence.
         try:
-            from services.asr_backend import release_idle_capture_backend
+            from services.asr_backend import (
+                release_idle_capture_backend,
+                release_transcription_backend,
+            )
 
-            if release_idle_capture_backend(idle_timeout):
+            released = release_idle_capture_backend(idle_timeout)
+            # The warm transcription ASR gets the same idle bargain.
+            if release_transcription_backend(idle_timeout) or released:
                 free_vram()
         except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
             logger.warning("idle capture-ASR release failed", exc_info=True)
@@ -3778,6 +3804,41 @@ def free_vram():
     if torch.cuda.is_available():
         _clear_cublas_workspaces(torch)
     release_device_cache(raise_on_failure=True)
+
+
+def release_after_oom(error: BaseException) -> None:
+    """Give an out-of-memory failure's device memory back to the driver.
+
+    ``free_vram()`` alone frees nothing here: OOM handlers run inside
+    ``except`` while ``error.__traceback__`` still pins every frame between
+    the handler and the allocation that failed, and those frames' locals hold
+    the activations. ``gc.collect()`` cannot reclaim them and ``empty_cache()``
+    only returns blocks the allocator already considers free, so the device
+    stays full and every later request fails the same way until a restart —
+    on Intel XPU the next kernel launch gets UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY
+    with ~11 GB still held. Clearing the finished frames (and those of every
+    chained exception) drops the activations first; the frame that is still
+    executing is skipped by ``traceback.clear_frames``. Best-effort, never
+    raises.
+    """
+    import traceback
+
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        try:
+            traceback.clear_frames(current.__traceback__)
+        except Exception:  # noqa: BLE001 — reclaim is best-effort
+            logger.debug("clearing OOM traceback frames failed", exc_info=True)
+        pending.extend((current.__cause__, current.__context__))
+    try:
+        free_vram()
+    except Exception:  # noqa: BLE001 — reclaim is best-effort
+        logger.debug("VRAM reclaim after OOM failed", exc_info=True)
 
 
 def unload_shared_model() -> bool:

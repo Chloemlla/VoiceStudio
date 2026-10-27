@@ -25,6 +25,7 @@ import os
 import re
 import contextlib
 import threading
+import uuid
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
@@ -519,7 +520,10 @@ class TTSBackend(ABC):
         return {
             "gpu_compat": gpu_compat,
             "min_vram_gb": min_vram_gb,
-            **resolve_routing(gpu_compat, caps, min_vram_gb),
+            **resolve_routing(
+                gpu_compat, caps, min_vram_gb,
+                parent_torch=not getattr(cls, "_is_subprocess_isolated", False),
+            ),
             "runtime_backend": None,
             "runtime_device_index": None,
             "runtime_device_name": None,
@@ -1578,8 +1582,8 @@ def _get_clone_prompt(
                         "releasing allocator caches and retrying once", e,
                     )
                     try:
-                        from services.model_manager import free_vram
-                        free_vram()
+                        from services.model_manager import release_after_oom
+                        release_after_oom(e)
                     except Exception:  # noqa: BLE001 — reclaim is best-effort
                         logger.debug("VRAM reclaim before OOM retry failed", exc_info=True)
                     prompt = model.create_voice_clone_prompt(
@@ -2749,6 +2753,86 @@ def _outetts_reference_array(path: str):
     return mx.array(np.asarray(mono, dtype=np.float32))
 
 
+#: The Whisper checkpoint mlx-audio's OuteTTS transcribes a reference with.
+_OUTETTS_WHISPER_REPO = "mlx-community/whisper-large-v3-turbo-asr-fp16"
+
+
+def _outetts_whisper_dir() -> str:
+    """Local snapshot of OuteTTS's speaker-building Whisper, never downloaded here.
+
+    mlx-audio resolves it with ``snapshot_download`` from inside the GPU-pool
+    worker, where the download deadlocked for the full 300 s watchdog (#2700).
+    Generation must not fetch models anyway, so a missing checkpoint fails
+    fast and names the catalogue entry that installs it.
+    """
+    from huggingface_hub import snapshot_download
+    from services.hf_revisions import revision_for
+
+    try:
+        return snapshot_download(
+            _OUTETTS_WHISPER_REPO,
+            revision=revision_for(_OUTETTS_WHISPER_REPO),
+            local_files_only=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "OuteTTS voice cloning needs its Whisper model to read the reference "
+            f"clip. Install \"{_OUTETTS_WHISPER_REPO}\" from the Model Catalogue, "
+            "then generate again."
+        ) from exc
+
+
+def _outetts_speaker_dir() -> str:
+    from core.config import DATA_DIR
+
+    return os.path.join(DATA_DIR, "outetts_speakers")
+
+
+_outetts_speaker_lock = threading.Lock()
+
+
+def _outetts_speaker_file(ref_audio: str) -> str:
+    """Path to an OuteTTS speaker profile for ``ref_audio``, built at most once.
+
+    The profile is keyed by the clip's path, size and mtime, so later
+    generations skip reloading Whisper and re-encoding the clip, and mlx-audio
+    no longer writes a fresh ``outetts_<uuid>.json`` on every call.
+    """
+    import hashlib
+
+    try:
+        st = os.stat(ref_audio)
+    except OSError as e:
+        raise TTSInputError("The reference audio file is missing or unreadable.") from e
+    digest = hashlib.sha256(
+        f"{os.path.abspath(ref_audio)}|{st.st_size}|{st.st_mtime_ns}".encode()
+    ).hexdigest()[:32]
+    path = os.path.join(_outetts_speaker_dir(), f"{digest}.json")
+    if os.path.isfile(path):
+        return path
+    # One build per clip at a time (parallel GPU workers can ask for the same
+    # clip), each writing its own temporary file so a replace never races.
+    with _outetts_speaker_lock:
+        if os.path.isfile(path):
+            return path
+        whisper_dir = _outetts_whisper_dir()
+        from mlx_audio.tts.models.outetts.audio_processor import AudioProcessor
+
+        processor = AudioProcessor()
+        speaker = processor.create_speaker_from_whisper(
+            _outetts_reference_array(ref_audio), whisper_model=whisper_dir,
+        )
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        try:
+            processor.save_speaker(speaker, tmp)
+            os.replace(tmp, path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+    return path
+
+
 class MLXAudioBackend(TTSBackend):
     """Blaizzy/mlx-audio — Apple-Silicon-only wrapper over 14+ TTS engines
     (Kokoro, CSM, Dia, Qwen3-TTS, Chatterbox, MeloTTS, OuteTTS, Spark,
@@ -2977,8 +3061,11 @@ class MLXAudioBackend(TTSBackend):
         if ref_audio and isinstance(ref_audio, str) and self._curated_key() == "outetts":
             # mlx-audio's OuteTTS only defines its Whisper input on the
             # in-memory branch, so a file path fails with UnboundLocalError
-            # ('resampled_audio'). Hand it the clip as the array it expects.
-            kwargs["ref_audio"] = _outetts_reference_array(ref_audio)
+            # ('resampled_audio'). It would also download Whisper inside the
+            # GPU worker and hang there (#2700). Build the speaker ourselves
+            # from the local checkpoint and hand mlx-audio the saved profile.
+            kwargs.pop("ref_audio")
+            kwargs["voice"] = _outetts_speaker_file(ref_audio)
         # The comment above claimed instruct was passed "for Qwen3"; it never
         # was. The curated `qwen3-tts` model IS the VoiceDesign variant, which
         # mlx-audio refuses to run without one — so the engine was unusable no
@@ -3441,6 +3528,47 @@ class GPTSoVITSBackend(TTSBackend):
 # ── Sherpa-ONNX adapter (universal ONNX runtime, WASM-ready) ───────────────
 
 
+def _sherpa_model_file(model_dir: str) -> Optional[str]:
+    """The VITS ``.onnx`` file in a sherpa-onnx model directory, or ``None``.
+
+    Most sherpa-onnx VITS releases name it ``model.onnx``, but every Piper
+    voice (``vits-piper-*``, the only option for many languages, e.g.
+    ``tr_TR-dfki-medium.onnx``) keeps its voice name. Prefer ``model.onnx``;
+    otherwise accept exactly one ``*.onnx`` so an ambiguous directory still
+    fails with the setup hint instead of loading the wrong file.
+    """
+    if not model_dir or not os.path.isdir(model_dir):
+        return None
+    preferred = os.path.join(model_dir, "model.onnx")
+    if os.path.isfile(preferred):
+        return preferred
+    candidates = sorted(
+        name for name in os.listdir(model_dir)
+        if name.lower().endswith(".onnx")
+        and os.path.isfile(os.path.join(model_dir, name))
+    )
+    return os.path.join(model_dir, candidates[0]) if len(candidates) == 1 else None
+
+
+def _sherpa_vits_extras(model_dir: str) -> dict[str, str]:
+    """Optional VITS config files the release ships next to the model.
+
+    Piper voices phonemize with espeak-ng and need ``espeak-ng-data`` as
+    ``data_dir``; lexicon-based VITS models (MeloTTS, Chinese voices) need
+    ``lexicon.txt``. Without them sherpa-onnx rejects the config or reads
+    nothing. A release's ``dict/`` is not passed: sherpa-onnx >= 1.13.3
+    ignores ``dict_dir`` for VITS and logs an error when it is set.
+    """
+    extras: dict[str, str] = {}
+    espeak = os.path.join(model_dir, "espeak-ng-data")
+    if os.path.isdir(espeak):
+        extras["data_dir"] = espeak
+    lexicon = os.path.join(model_dir, "lexicon.txt")
+    if os.path.isfile(lexicon):
+        extras["lexicon"] = lexicon
+    return extras
+
+
 class SherpaOnnxBackend(TTSBackend):
     """k2-fsa/sherpa-onnx — unified C++ ONNX runtime for TTS (and ASR).
 
@@ -3499,11 +3627,12 @@ class SherpaOnnxBackend(TTSBackend):
                 "restart VoiceStudio. Download models from "
                 "https://github.com/k2-fsa/sherpa-onnx/releases"
             )
-        if not os.path.isfile(os.path.join(model_dir, "model.onnx")):
+        if _sherpa_model_file(model_dir) is None:
             return False, (
                 f"No model.onnx in OMNIVOICE_SHERPA_MODEL ({model_dir}). Point "
                 "it at a sherpa-onnx TTS model directory containing model.onnx "
-                "+ tokens.txt. Download models from "
+                "(or a single <voice>.onnx, as Piper voices ship) + tokens.txt. "
+                "Download models from "
                 "https://github.com/k2-fsa/sherpa-onnx/releases"
             )
         return True, "ready"
@@ -3533,10 +3662,10 @@ class SherpaOnnxBackend(TTSBackend):
             )
 
         # Auto-detect model type from directory contents
-        model_onnx = os.path.join(self._model_dir, "model.onnx")
+        model_onnx = _sherpa_model_file(self._model_dir)
         tokens = os.path.join(self._model_dir, "tokens.txt")
 
-        if not os.path.isfile(model_onnx):
+        if model_onnx is None:
             raise RuntimeError(
                 f"No model.onnx found in {self._model_dir}. "
                 "Download a model from https://github.com/k2-fsa/sherpa-onnx/releases"
@@ -3548,6 +3677,7 @@ class SherpaOnnxBackend(TTSBackend):
                 vits=sherpa_onnx.OfflineTtsVitsModelConfig(
                     model=model_onnx,
                     tokens=tokens,
+                    **_sherpa_vits_extras(self._model_dir),
                 ),
             ),
         )
@@ -3952,7 +4082,10 @@ def list_backends(*, include_hidden: bool = False) -> list[dict]:
             profile = {
                 "gpu_compat": compat,
                 "min_vram_gb": floor,
-                **resolve_routing(compat, caps, floor),
+                **resolve_routing(
+                    compat, caps, floor,
+                    parent_torch=not getattr(cls, "_is_subprocess_isolated", False),
+                ),
                 "runtime_backend": None,
                 "runtime_device_index": None,
                 "runtime_device_name": None,

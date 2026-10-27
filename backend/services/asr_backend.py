@@ -396,6 +396,16 @@ def transcribe_request_kwargs(backend, options: dict) -> dict:
     }
 
 
+#: Sequential Whisper decoders (faster-whisper, MLX Whisper) feed each 30 s
+#: window the previous window's text by default. On long audio one
+#: hallucinated window is then repeated through the rest of the file, so we
+#: decode every window on its own. Clips under 30 s are a single window, so
+#: short dictation and reference clips decode exactly as before. WhisperX and
+#: the batched/transformers pipelines already decode windows independently.
+#: The ASR sidecar (engines/_asr_sidecar/main.py) applies the same option.
+WHISPER_LONG_FORM_OPTIONS = {"condition_on_previous_text": False}
+
+
 def whisper_request_options(language, initial_prompt, temperature, task) -> dict:
     """Whisper-family decode kwargs for the options that were actually set."""
     opts: dict = {}
@@ -1287,6 +1297,7 @@ class FasterWhisperBackend(ASRBackend):
             word_timestamps=word_timestamps,
             vad_filter=True,  # built-in Silero VAD — cleaner segment starts
             **asr_decode_defaults(),
+            **WHISPER_LONG_FORM_OPTIONS,
             **whisper_request_options(language, initial_prompt, temperature, task),
         )
         segments = list(segments_iter)
@@ -1351,15 +1362,17 @@ _MLX_MODEL_DEFAULT = "mlx-community/whisper-large-v3-mlx"
 _MLX_MODEL_TURBO = "mlx-community/whisper-large-v3-turbo"
 
 
+def mlx_whisper_model_id() -> str:
+    return os.environ.get("ASR_MODEL", _MLX_MODEL_DEFAULT)
+
+
 class MLXWhisperBackend(ASRBackend):
     id = "mlx-whisper"
     display_name = "MLX Whisper (Apple Silicon CoreML)"
     gpu_compat = ("mps", "cpu")
 
     def __init__(self, model_name: str | None = None):
-        self._model_name = model_name or os.environ.get(
-            "ASR_MODEL", _MLX_MODEL_DEFAULT,
-        )
+        self._model_name = model_name or mlx_whisper_model_id()
 
     @classmethod
     def is_available(cls) -> tuple[bool, str]:
@@ -1409,6 +1422,7 @@ class MLXWhisperBackend(ASRBackend):
             audio,
             path_or_hf_repo=_local_model_source(self._model_name),
             word_timestamps=word_timestamps,
+            **WHISPER_LONG_FORM_OPTIONS,
             **whisper_request_options(language, initial_prompt, temperature, task),
         )
         # Forced alignment, same as WhisperX (#1127). On Apple Silicon this
@@ -1623,7 +1637,7 @@ class PyTorchWhisperBackend(ASRBackend):
                 f"PyTorch Whisper ASR initialization failed: {type(e).__name__}: {e}"
             ) from e
 
-    #: Batch sizes to try on CUDA, largest first. The VRAM preflight only sizes
+    #: Batch sizes to try on a dedicated GPU (CUDA or Intel XPU), largest first. The VRAM preflight only sizes
     #: the *weights*; generation adds an encoder/decoder workspace that scales
     #: with the batch, and `return_timestamps="word"` keeps every layer's
     #: cross-attention for the whole batch — gigabytes at batch 16. A card with
@@ -1642,7 +1656,11 @@ class PyTorchWhisperBackend(ASRBackend):
                 return True
         except Exception:  # noqa: BLE001 — classification must not raise
             pass
-        return "out of memory" in str(exc).lower()
+        from core.failure import is_gpu_oom
+
+        # Every accelerator's device-OOM spelling, incl. Intel XPU's
+        # UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY.
+        return "out of memory" in str(exc).lower() or is_gpu_oom(exc)
 
     def _rebuild_on_cpu(self) -> None:
         """Move the existing pipeline to CPU without resolving any model files."""
@@ -1650,12 +1668,14 @@ class PyTorchWhisperBackend(ASRBackend):
 
         # Keep the loaded checkpoint, tokenizer and feature extractor. Looking
         # up the default model here could download a different model offline.
+        gpu = str(getattr(self._pipe, "device", "") or "")
         self._pipe.model.to(device="cpu", dtype=torch.float32)
         self._pipe.device = torch.device("cpu")
-        try:
-            torch.cuda.empty_cache()
-        except Exception:
-            pass  # Some builds have no CUDA cache to release.
+        if gpu and not gpu.startswith("cpu"):
+            # Return the weights' blocks to the GPU they left (CUDA or XPU).
+            from services.model_manager import release_device_cache
+
+            release_device_cache(device=gpu)
 
     def supports_translation(self) -> bool:
         # A reused TTS-model ASR head may differ from the env default: ask the
@@ -1691,7 +1711,7 @@ class PyTorchWhisperBackend(ASRBackend):
                 **({"generate_kwargs": generate_kwargs} if generate_kwargs else {}),
             )
 
-        if self._on_cuda():
+        if self._on_dedicated_gpu():
             ladder = (
                 self._CUDA_BATCH_LADDER_WORD_TS if word_timestamps
                 else self._CUDA_BATCH_LADDER
@@ -1703,15 +1723,14 @@ class PyTorchWhisperBackend(ASRBackend):
                 except Exception as e:  # noqa: BLE001 — only OOM is retryable
                     if not self._is_oom(e):
                         raise
-                    try:
-                        import torch
+                    # Drop the failed batch's activations (still pinned by
+                    # this traceback) before the smaller retry.
+                    from services.model_manager import release_after_oom
 
-                        torch.cuda.empty_cache()
-                    except Exception:  # noqa: BLE001
-                        pass
+                    release_after_oom(e)
                     if i + 1 < len(ladder):
                         logger.warning(
-                            "PyTorch Whisper CUDA OOM at batch_size=%d — "
+                            "PyTorch Whisper GPU OOM at batch_size=%d — "
                             "retrying at %d. Free VRAM (Flush models, close "
                             "other GPU apps) for full-speed ASR.",
                             bs, ladder[i + 1],
@@ -1721,7 +1740,7 @@ class PyTorchWhisperBackend(ASRBackend):
                     # return an empty chunk the caller cannot distinguish
                     # from silence.
                     logger.warning(
-                        "PyTorch Whisper CUDA OOM even at batch_size=1 — "
+                        "PyTorch Whisper GPU OOM even at batch_size=1 — "
                         "transcribing on CPU (slower, same model). Detail: %s", e,
                     )
                     self._rebuild_on_cpu()
@@ -1730,16 +1749,17 @@ class PyTorchWhisperBackend(ASRBackend):
             result = _run(2)
         return result if isinstance(result, dict) else {"chunks": [], "raw": result}
 
-    def _on_cuda(self) -> bool:
-        """Whether the built pipeline actually sits on a CUDA device.
+    def _on_dedicated_gpu(self) -> bool:
+        """Whether the built pipeline actually sits on a CUDA or Intel XPU device.
 
         `torch.cuda.is_available()` is the wrong question: `_pick_device()` may
         have chosen CPU on a CUDA host (low free VRAM), and a CPU pipeline must
-        not be handed a CUDA-sized batch.
+        not be handed a GPU-sized batch. `get_best_device()` also picks XPU on
+        Intel Arc, whose OOMs need the same batch ladder and release.
         """
         try:
-            device = getattr(self._pipe, "device", None)
-            return "cuda" in str(device).lower()
+            device = str(getattr(self._pipe, "device", None)).lower()
+            return device.startswith(("cuda", "xpu"))
         except Exception:  # noqa: BLE001
             return False
 
@@ -3224,9 +3244,14 @@ def _licence_accepted(repo_id: str | None) -> bool:
 
 def load_active_asr_backend(
     *, asr_pipe=None, require_installed: bool = False, defer_pytorch: bool = False,
+    warm: bool = False,
 ) -> ASRBackend:
     """:func:`get_active_asr_backend` + eager ``ensure_loaded()``, degrading
     past backends whose deep import chain is broken (#1185).
+
+    ``warm=True`` reuses one loaded instance across requests (see
+    :func:`_load_warm_transcription_backend`); dub and batch keep private
+    instances because they release ASR before TTS loads.
 
     ``is_available()`` is a shallow probe (``import whisperx`` succeeds even
     with broken transitive deps, because pyannote/pytorch_lightning only
@@ -3251,6 +3276,8 @@ def load_active_asr_backend(
     the TTS model's installed-only fallback, without eagerly loading a second
     copy that the reference caller would immediately discard.
     """
+    if warm and asr_pipe is None and not defer_pytorch:
+        return _load_warm_transcription_backend(require_installed=require_installed)
     from core.scrub import scrub_text
     tried: set[str] = set()
     while True:
@@ -3310,6 +3337,72 @@ def load_active_asr_backend(
                 "(%s) — marking it unavailable and falling through to the "
                 "next engine (#1185)", bid, e,
             )
+
+
+# ── Warm transcription backend ──────────────────────────────────────────────
+# `get_active_asr_backend()` builds a fresh instance per call for the whisper
+# family, so every accurate / reference / OpenAI-route / voice-convert
+# transcription reloaded the weights (seconds of load for a second of
+# decoding). Those request paths opt in with ``warm=True`` and share one loaded
+# instance per (engine, model). It is released like the warm dictation ASR: by
+# the idle worker, before TTS loads or generates, and by the Unload control.
+# Releasing only drops this reference, so a request still holding the instance
+# finishes normally and the weights are freed once it lets go.
+_transcribe_backend: ASRBackend | None = None
+_transcribe_backend_key: tuple | None = None
+_transcribe_last_used: float = 0.0
+_transcribe_backend_lock = threading.Lock()
+
+
+def _backend_identity(backend: ASRBackend) -> tuple:
+    """What a warm instance was loaded for: a Settings change of engine or
+    model makes the next request load the new selection."""
+    name = getattr(backend, "_model_name", None)
+    if callable(name):
+        try:
+            name = name()
+        except Exception:  # noqa: BLE001 — identity only, never fatal
+            name = None
+    spec_id = getattr(getattr(backend, "spec", None), "id", None)
+    return (type(backend), getattr(backend, "id", None), str(name or ""), str(spec_id or ""))
+
+
+def _load_warm_transcription_backend(*, require_installed: bool) -> ASRBackend:
+    global _transcribe_backend, _transcribe_backend_key, _transcribe_last_used
+    selected = get_active_asr_backend()
+    key = _backend_identity(selected)
+    with _transcribe_backend_lock:
+        cached = _transcribe_backend if _transcribe_backend_key == key else None
+    if cached is not None:
+        ensure_backend_licence(cached)  # per use: a revoked acceptance applies now
+        with _transcribe_backend_lock:
+            _transcribe_last_used = time.monotonic()
+        return cached
+    backend = load_active_asr_backend(require_installed=require_installed)
+    with _transcribe_backend_lock:
+        _transcribe_backend = backend
+        _transcribe_backend_key = _backend_identity(backend)
+        _transcribe_last_used = time.monotonic()
+    return backend
+
+
+def warm_transcription_backend() -> ASRBackend | None:
+    """The warm transcription instance, if one is loaded (listing only)."""
+    return _transcribe_backend
+
+
+def release_transcription_backend(idle_s: float = 0.0, *, now: float | None = None) -> bool:
+    """Drop the warm transcription instance once unused for ``idle_s`` seconds.
+    Returns True when one was released. Never raises."""
+    global _transcribe_backend, _transcribe_backend_key
+    now = time.monotonic() if now is None else now
+    with _transcribe_backend_lock:
+        if _transcribe_backend is None or now - _transcribe_last_used < idle_s:
+            return False
+        backend = _transcribe_backend
+        _transcribe_backend, _transcribe_backend_key = None, None
+    logger.info("Releasing the warm transcription ASR (%s).", type(backend).__name__)
+    return True
 
 
 # ── Reference-transcript cache (#1032) ──────────────────────────────────────
@@ -4179,7 +4272,7 @@ def _offline_asr_repo(backend_id: str | None = None) -> str | None:
             or _FASTER_WHISPER_DEFAULT
         )
     if bid == "mlx-whisper":
-        return os.environ.get("ASR_MODEL", _MLX_MODEL_DEFAULT)
+        return mlx_whisper_model_id()
     if bid == "parakeet-mlx":
         return os.environ.get("ASR_MODEL_PARAKEET_MLX", _PARAKEET_MLX_DEFAULT)
     if bid == "sherpa-onnx-asr":

@@ -74,15 +74,14 @@ const electronPackage = JSON.parse(readFileSync(resolve(root, 'package.json'), '
 assert.match(electronPackage.author?.email ?? '', /@/, 'Linux package declares a maintainer email');
 assert.equal(config.productName, PRODUCT_NAME, 'Builder uses the central product name');
 assert.equal(config.appId, APP_ID, 'Builder uses the central application ID');
+const storeLabel = {
+  'microsoft-store': 'MicrosoftStore-',
+  'mac-app-store': 'MacAppStore-',
+}[DISTRIBUTION_TARGET];
 assert.equal(
   config.artifactName,
-  `${PRODUCT_NAME}-${
-    {
-      'microsoft-store': 'MicrosoftStore',
-      'mac-app-store': 'MacAppStore',
-    }[DISTRIBUTION_TARGET] ?? 'Electron'
-  }-\${version}-\${os}-\${arch}.\${ext}`,
-  'Store packaging is distinct without renaming direct-download artifacts',
+  `${PRODUCT_NAME}-${storeLabel ?? ''}\${version}-\${os}-\${arch}.\${ext}`,
+  'Direct downloads are VoiceStudio-<version>-<os>-<arch>; store packages stay labelled',
 );
 assert.equal(
   config.extraMetadata.voicestudioDistribution,
@@ -216,9 +215,20 @@ for (const [platform, icon] of Object.entries(platformIcons)) {
   assert.equal(config[platform].icon, icon, `${platform} uses the shared VoiceStudio icon`);
   assert(existsSync(resolve(root, icon)), `${platform} VoiceStudio icon exists`);
 }
-for (const icon of ['brand/icon.png', 'brand/icon.ico', 'brand/32x32.png']) {
+for (const icon of [
+  'brand/icon.png',
+  'brand/icon-macos.png',
+  'brand/icon.ico',
+  'brand/32x32.png',
+  'brand/tray-recording.png',
+  'brand/trayTemplate.png',
+  'brand/trayRecordingTemplate.png',
+]) {
   const entry = config.extraResources.find((item) => item.to === icon);
   assert(entry && existsSync(resolve(root, entry.from)), `Runtime icon: ${icon}`);
+  if (artifactRequested) {
+    assert(existsSync(resolve(artifactResources, icon)), `Packaged runtime icon: ${icon}`);
+  }
 }
 assert.equal(typeof config.afterPack, 'function', 'Native helper must be built before signing');
 // electron-builder UNIONS an explicit per-target `arch` with the --x64/--arm64
