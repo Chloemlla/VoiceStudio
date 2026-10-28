@@ -383,8 +383,8 @@ def _dots_host() -> tuple[bool, str]:
     if sys.platform != "win32":
         return True, ""
     return False, (
-        "dots.tts publishes no Windows install. Run VoiceStudio on Linux or "
-        "macOS, or under WSL2, to use it."
+        "dots.tts publishes no Windows install. Use the audio.cpp dots.tts "
+        "engine instead, which runs natively on Windows."
     )
 
 
@@ -705,7 +705,7 @@ SPECS: dict[str, SidecarSpec] = {
         ),
         venv_args=("--python", "3.10"),
         install_args=("-r", _COSYVOICE_REQUIREMENTS, "{checkout}/third_party/PyWorld"),
-        install_revision="security-floors-v3",
+        install_revision="security-floors-v4",
         torch_pins=("torch==2.7.0", "torchaudio==2.7.0"),
         weights_repo_id="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
         weights_revision="29e01c4e8d000f4bcd70751be16fa94bf3d85a18",
@@ -1629,7 +1629,7 @@ def _existing_venv_compatible(spec: SidecarSpec, py: Path) -> bool:
     try:
         result = subprocess.run(
             [str(py), "-I", "-c", "import sys; print('%s.%s' % sys.version_info[:2])"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, errors="replace", timeout=15,
         )
         version = result.stdout.strip()
         if result.returncode != 0 or not version or not all(
@@ -1885,17 +1885,14 @@ def _step_fetch_weights(spec: SidecarSpec, job: dict) -> None:
         # other model download in the app — see setup/download.py): the
         # source checkout is unpinned upstream `main` anyway, and hf_hub
         # checksum-verifies each artifact. Hence the B615 waiver below.
-        # Unwrap to the bearer string: snapshot_download takes `token: str |
-        # None`, and a ResolvedToken record is ignored in favour of ambient
-        # discovery, so gated engine weights 401 for a user whose token lives
-        # in VoiceStudio's settings rather than HF's own cache (#2163).
-        _resolved = resolve_token()
+        # resolve() returns a record (or None); huggingface_hub needs the string.
+        _record = resolve_token()
+        _bearer = getattr(_record, "token", None) if _record else None
         endpoint = endpoint_race.effective_endpoint()
         kwargs: dict = {
             "repo_id": spec.weights_repo_id,
             "local_dir": str(wdir),
-            # Hugging Face hosts only — a mirror never receives the token.
-            "token": token_for_endpoint(endpoint, _resolved.token if _resolved else None),
+            "token": token_for_endpoint(endpoint, _bearer),
         }
         if spec.weights_revision:
             kwargs["revision"] = spec.weights_revision

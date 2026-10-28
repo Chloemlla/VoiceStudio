@@ -209,16 +209,19 @@ class AgentFitRequest(BaseModel):
     target_lang: str
 
 class ProsodyMirrorSegment(BaseModel):
+    """One timed source line to measure for the prosody mirror."""
+
     id: str = Field(min_length=1, max_length=128)
     start: float = Field(ge=0, allow_inf_nan=False)
     end: float = Field(ge=0, allow_inf_nan=False)
     speaker_id: Optional[str] = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
-    def validate_span(self) -> "ProsodyMirrorSegment":
+    def _end_after_start(self):
         if self.end <= self.start:
-            raise ValueError("Segment end must be after its start")
+            raise ValueError("segment end must be later than its start")
         return self
+
 
 
 class TranscriptSegment(BaseModel):
@@ -242,35 +245,30 @@ class TranscriptSyncRequest(BaseModel):
 
 
 class CleanupSegmentsRequest(BaseModel):
-    """The editor's current segments; without them the job's stored copy is
-    cleaned, which misses every edit made since transcription."""
+    """The editor's current segments; without them the stored copy is cleaned."""
 
     segments: List[dict] = Field(max_length=20000)
 
     @field_validator("segments")
     @classmethod
-    def validate_segment_shape(cls, segments: List[dict]) -> List[dict]:
-        # Cleanup defaults missing fields to empty values and drops them, so a
-        # malformed segment would silently vanish instead of being rejected.
-        required = {"start", "end", "text"}
-        if any(not required.issubset(segment) for segment in segments):
-            raise ValueError("Each cleanup segment must include start, end and text")
-        return segments
+    def _segments_have_timing_and_text(cls, value):
+        for segment in value:
+            missing = [key for key in ("start", "end", "text") if key not in segment]
+            if missing:
+                raise ValueError("each segment needs start, end and text")
+        return value
 
 
 class ProsodyMirrorRequest(BaseModel):
-    """Segments as the editor currently holds them: splits, merges and timing
-    edits are client-side until generation, so the job's stored copy is stale."""
-
     segments: List[ProsodyMirrorSegment] = Field(min_length=1, max_length=20000)
 
     @field_validator("segments")
     @classmethod
-    def validate_unique_ids(cls, v: List[ProsodyMirrorSegment]) -> List[ProsodyMirrorSegment]:
-        if len({segment.id for segment in v}) != len(v):
-            raise ValueError("Segment ids must be unique")
-        return v
-
+    def _unique_ids(cls, value):
+        ids = [segment.id for segment in value]
+        if len(set(ids)) != len(ids):
+            raise ValueError("segment ids must be unique")
+        return value
 
 class ParseSubtitleTextRequest(BaseModel):
     """Raw pasted subtitle text (SRT/VTT-ish) to be parsed into timed cues.

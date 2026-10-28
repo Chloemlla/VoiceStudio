@@ -35,6 +35,7 @@ vi.mock('./legacy-storage', () => ({
 }));
 import {
   devRendererPort,
+  loadBlockMessage,
   resolveSpawnPlan,
   managedBackendSpawnOptions,
   setBackendOnlyEnv,
@@ -127,6 +128,25 @@ it('names the folder to open and refuses setup advice outside a checkout (#2988)
   if (!('error' in plan)) throw new Error('expected a setup error');
   expect(plan.error).toContain('not a VoiceStudio source checkout');
   expect(plan.error).toContain('release installer');
+});
+
+it('sends an Intel Mac checkout to a remote backend instead of setup:api (#3584)', async () => {
+  vi.stubEnv('OMNIVOICE_BACKEND_CMD', '');
+  state.ready = false;
+  const plan = await resolveSpawnPlan(3900, undefined, 'unsupported_platform');
+  if (!('error' in plan)) throw new Error('expected a host error');
+  expect(plan.setupIssue).toBe('unsupported_platform');
+  expect(plan.error).toContain('backend on another computer');
+  expect(plan.error).not.toContain('incomplete');
+
+  const rosetta = await resolveSpawnPlan(3900, undefined, 'wrong_architecture');
+  if (!('error' in rosetta)) throw new Error('expected a host error');
+  expect(rosetta.error).toContain('arm64');
+  expect(rosetta).not.toHaveProperty('setupIssue');
+
+  // An explicit backend command still wins on any host.
+  vi.stubEnv('OMNIVOICE_BACKEND_CMD', '["custom-python"]');
+  expect(await resolveSpawnPlan(3900, undefined, 'unsupported_platform')).toHaveProperty('argv');
 });
 
 it('keeps native fault frames when the production log ring overflows', async () => {
@@ -345,4 +365,22 @@ it('tells the backend which commit the app was built from (#3293)', () => {
   expect(managedBackendSpawnOptions(3900).env.OMNIVOICE_BUILD_COMMIT).toBe('000000000');
   vi.stubEnv('OMNIVOICE_BUILD_COMMIT', 'abcdef123');
   expect(managedBackendSpawnOptions(3900).env.OMNIVOICE_BUILD_COMMIT).toBe('abcdef123');
+});
+
+it('names Smart App Control when it refused a runtime DLL, and other blockers otherwise (#3209)', () => {
+  const last =
+    'ImportError: DLL load failed while importing _sqlite3: An Application Control policy has blocked this file.';
+  expect(loadBlockMessage('exit code 1', last, 'application_control', 'on')).toBe(
+    "Backend exited (exit code 1): Windows refused to load one of the engine's files. " +
+      `Windows Smart App Control blocked it. Last output: ${last}`,
+  );
+  expect(loadBlockMessage('exit code 1', last, 'application_control', 'off')).toContain(
+    'A Windows application control policy blocked it.',
+  );
+  expect(loadBlockMessage('exit code 1', '', 'group_policy', 'on')).toContain(
+    'A Windows application control policy blocked it.',
+  );
+  expect(loadBlockMessage('exit code 1', '', 'antivirus')).toBe(
+    "Backend exited (exit code 1): Windows refused to load one of the engine's files. Your antivirus blocked it.",
+  );
 });

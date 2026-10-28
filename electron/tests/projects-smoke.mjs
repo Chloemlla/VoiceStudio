@@ -1,30 +1,10 @@
-import { chromium } from 'playwright';
+import { launchSmokeBrowser, openMockedPage } from './smoke-api-mock.mjs';
 import assert from 'node:assert/strict';
-const browser = await chromium.launch({
-  ...(process.env.CHROMIUM_PATH
-    ? { executablePath: process.env.CHROMIUM_PATH }
-    : { channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge' }),
-  headless: true,
-});
+const browser = await launchSmokeBrowser({ fallbackChannel: 'msedge' });
 try {
-  const page = await browser.newPage();
-  await page.addInitScript(() => localStorage.setItem('voicestudio.setup.complete.v1', '1'));
-  await page.route(
-    (url) => url.pathname.startsWith('/api/'),
-    (route) => {
-      const path = new URL(route.request().url()).pathname;
-      const fixtures = {
-        '/api/health': { status: 'ok' },
-        '/api/setup/status': { ready: true },
-        '/api/models/install/status': { jobs: [] },
-      };
-      return path in fixtures
-        ? route.fulfill({ json: fixtures[path] })
-        : route.fulfill({ status: 404, json: { detail: 'Not mocked' } });
-    },
-  );
+  const page = await openMockedPage(browser);
   const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('pageerror', (error) => errors.push(error.message));
   const stored = {
     id: 'legacy',
     name: 'Legacy project',
@@ -118,7 +98,7 @@ try {
   });
   await page.goto((process.env.VOICESTUDIO_UI_URL || 'http://localhost:3902') + '/#/projects');
   const filters = page.locator('[data-slot=secondary-sidebar]');
-  await filters.getByRole('button', { name: 'Voice Profiles 1', exact: true }).click();
+  await filters.getByRole('button', { name: 'Voice profiles 1', exact: true }).click();
   await page.locator('main').getByRole('heading', { name: 'Library voice', exact: true }).waitFor();
   await filters.getByRole('button', { name: 'Transcripts 1', exact: true }).click();
   await page.getByText('Fixture transcript', { exact: true }).waitFor();
@@ -174,7 +154,7 @@ try {
   await page
     .getByRole('button', { name: 'Library renamed', exact: true })
     .waitFor({ state: 'detached' });
-  await filters.getByRole('button', { name: 'Voice Profiles 1', exact: true }).click();
+  await filters.getByRole('button', { name: 'Voice profiles 1', exact: true }).click();
   await page.locator('main').getByRole('heading', { name: 'Library voice', exact: true }).waitFor();
   assert.equal(row, null);
   assert.deepEqual(errors, []);

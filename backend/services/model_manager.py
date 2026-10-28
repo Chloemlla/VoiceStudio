@@ -1515,24 +1515,23 @@ def _configure_rocm_if_needed(torch):
     if sys.platform == "win32":
         return  # Windows uses AMD's exact native matrix, never Linux HSA remaps.
     from core.device_caps import (
-        ROCM_GFX_OVERRIDES,
         build_arch_list,
         hsa_override_for,
+        rocm_override_target,
     )
 
     if os.environ.get("HSA_OVERRIDE_GFX_VERSION"):
         return  # User already set it manually
     try:
-        device_name = torch.cuda.get_device_name(0).lower()
-        # Only AMD GPUs need this — skip NVIDIA
-        if not any(kw in device_name for kw in ("amd", "radeon", "instinct")):
+        # Only ROCm builds take an HSA override. Decided from the build, not
+        # from the marketing name, which says nothing about the runtime.
+        if not getattr(getattr(torch, "version", None), "hip", None):
             return
-        # Try to read the GFX version from the device properties
+        device_name = torch.cuda.get_device_name(0)
         props = torch.cuda.get_device_properties(0)
         gcn_arch = getattr(props, "gcnArchName", "") or ""
         gfx_id = gcn_arch.split(":")[0].strip().lower()
-        target = ROCM_GFX_OVERRIDES.get(gfx_id)
-        if not target:
+        if not gfx_id.startswith("gfx"):
             return
         arch_list = {a.split(":")[0].strip().lower() for a in build_arch_list(torch)}
         if not arch_list:
@@ -1548,15 +1547,18 @@ def _configure_rocm_if_needed(torch):
             logger.info("ROCm: %s (%s) is natively supported by this build; "
                         "no HSA_OVERRIDE_GFX_VERSION needed", device_name, gfx_id)
             return
-        if target not in arch_list:
-            # The remap target isn't in this build either — setting the
+        # Derived from what this wheel ships, so a card newer than any table
+        # still gets the closest same-family target (#3418).
+        target = rocm_override_target(gfx_id, arch_list)
+        if not target:
+            # No architecture this build ships can run the card: setting the
             # override would only change WHICH kernel is missing. Leave it
             # unset so check_device_compatibility() reports the real mismatch
             # and the CPU fallback engages.
             logger.warning(
-                "ROCm: %s (%s) is unsupported by this build and its remap "
-                "target %s is missing too — not setting "
-                "HSA_OVERRIDE_GFX_VERSION.", device_name, gfx_id, target,
+                "ROCm: %s (%s) is unsupported by this build and no same-family "
+                "target is available — not setting HSA_OVERRIDE_GFX_VERSION.",
+                device_name, gfx_id,
             )
             return
         override = hsa_override_for(target)
@@ -1730,9 +1732,11 @@ def _is_compile_runtime_failure(exc: BaseException) -> bool:
     as an AssertionError out of torch/_inductor/cudagraph_trees.py. An
     architecture missing from the running torch build's arch list is rejected
     earlier by should_torch_compile(), before this runtime fallback applies.
-    #278 also quotes "Detected that you are using FX to symbolically trace a
-    dynamo-optimized function"; Dynamo raises that on any device, CPU included,
-    so it is a compile-stack error to catch here but never an arch signal.
+
+    The Dynamo error about FX symbolically tracing a dynamo-optimized function
+    (quoted in #278) is raised on any device, CPU included. It is a compile-stack
+    error, so this function reports it as a compile failure and the eager retry
+    happens, but it says nothing about whether the GPU architecture is supported.
     Walks the exception chain and checks (a) the exception type's module,
     (b) the message, (c) the traceback file paths — the cudagraph case is a
     bare AssertionError, so the traceback check is load-bearing.
@@ -1957,61 +1961,47 @@ _TORCH_COMPILE_MODE = "reduce-overhead"
 # would not.
 _CUDAGRAPH_COMPILE_MODES = frozenset({"reduce-overhead", "max-autotune"})
 
-# ── #2135: CUDA-graph capture needs Ampere or newer ─────────────────────────
-# On a Turing T4 (sm_75) the cudagraph mode above took the whole backend
-# process down on the first generate — no Python traceback, no HTTP response,
-# just a dead PID (the native capture aborts below the interpreter, so neither
-# the #278 eager fallback nor any `except` can see it). The graph *capture* is
-# the risky part, not Inductor: dropping to the non-cudagraph "default" mode
-# keeps the compiled kernels (and most of the speedup) while removing the
-# crash surface. Ampere (sm_80) is the floor because that is where the app has
-# actual passing evidence; anything older takes the conservative path.
-_CUDAGRAPH_MIN_CAPABILITY = (8, 0)
-# Escape hatch in the other direction, for operators benchmarking on old GPUs.
-_FORCE_CUDAGRAPH_ENV = "OMNIVOICE_FORCE_CUDAGRAPH"
+_GRAPH_CAPTURE_FLOOR = (8, 0)
+_GRAPH_CAPTURE_OVERRIDE = "OMNIVOICE_FORCE_CUDAGRAPH"
 
 
-def _resolve_compile_mode() -> str:
-    """The ``torch.compile`` mode to use on this GPU (#2135).
+def _resolved_compile_mode(requested: str = _TORCH_COMPILE_MODE) -> str:
+    """Choose graph capture only when the active CUDA device is known suitable."""
+    if requested not in _CUDAGRAPH_COMPILE_MODES:
+        return requested
 
-    Returns the configured cudagraph mode on Ampere+, and the non-cudagraph
-    ``"default"`` on older architectures where graph capture has been observed
-    to abort the process. Fails *safe* (→ "default") only when we positively
-    identify a pre-Ampere device; any probe error keeps the configured mode so
-    a weird torch build doesn't silently lose the optimization.
-    """
-    if _TORCH_COMPILE_MODE not in _CUDAGRAPH_COMPILE_MODES:
-        return _TORCH_COMPILE_MODE
-    if os.environ.get(_FORCE_CUDAGRAPH_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+    override = os.getenv(_GRAPH_CAPTURE_OVERRIDE, "").strip().casefold()
+    if override in {"yes", "1", "on", "true"}:
         logger.warning(
-            "%s=1 — keeping torch.compile mode %r on a GPU where CUDA-graph "
-            "capture is not known-good (#2135).",
-            _FORCE_CUDAGRAPH_ENV, _TORCH_COMPILE_MODE,
+            "%s keeps compile mode %r; CUDA graph safety has not been established for this adapter.",
+            _GRAPH_CAPTURE_OVERRIDE, requested,
         )
-        return _TORCH_COMPILE_MODE
-    try:
-        import torch
+        return requested
 
-        if not torch.cuda.is_available():
-            return _TORCH_COMPILE_MODE
-        capability = torch.cuda.get_device_capability(0)
-    except Exception:
-        logger.debug("compile-mode capability probe failed; keeping %r",
-                     _TORCH_COMPILE_MODE, exc_info=True)
-        return _TORCH_COMPILE_MODE
-    if tuple(capability) >= _CUDAGRAPH_MIN_CAPABILITY:
-        return _TORCH_COMPILE_MODE
+    torch_runtime = sys.modules.get("torch")
+    if torch_runtime is None:
+        return requested
     try:
-        device_name = torch.cuda.get_device_name(0)
+        cuda = torch_runtime.cuda
+        if not cuda.is_available():
+            return requested
+        compute_level = tuple(cuda.get_device_capability(0))
+    except Exception as probe_error:
+        logger.debug("CUDA capability lookup did not complete: %s", probe_error, exc_info=True)
+        return requested
+
+    if compute_level >= _GRAPH_CAPTURE_FLOOR:
+        return requested
+    try:
+        adapter = str(cuda.get_device_name(0))
     except Exception:
-        device_name = "this GPU"
+        adapter = "unnamed CUDA adapter"
+    sm_tag = f"sm_{compute_level[0]}{compute_level[1]}"
+    floor_tag = f"sm_{_GRAPH_CAPTURE_FLOOR[0]}{_GRAPH_CAPTURE_FLOOR[1]}"
     logger.info(
-        "torch.compile mode %r downgraded to 'default' on %s (sm_%d%d): CUDA-graph "
-        "capture below sm_%d%d has been seen to abort the backend process (#2135). "
-        "Compiled kernels are still used. Set %s=1 to override.",
-        _TORCH_COMPILE_MODE, device_name, capability[0], capability[1],
-        _CUDAGRAPH_MIN_CAPABILITY[0], _CUDAGRAPH_MIN_CAPABILITY[1],
-        _FORCE_CUDAGRAPH_ENV,
+        "%s reports %s, below the %s CUDA-graph floor. Using torch.compile mode 'default' "
+        "so kernels stay compiled without capture; %s=1 opts back into %r.",
+        adapter, sm_tag, floor_tag, _GRAPH_CAPTURE_OVERRIDE, requested,
     )
     return "default"
 
@@ -2085,20 +2075,24 @@ def _set_loading(sub_stage: str, detail: str = "", error: str | None = None, pro
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
+    try:
+        raw_setting = os.environ[name]
+    except KeyError:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = raw_setting.casefold().strip()
+    truth_table = dict.fromkeys(("1", "true", "yes", "on"), True)
+    return bool(truth_table.get(normalized))
 
 
 def should_preload_tts_asr() -> bool:
-    """Whether VoiceStudio.from_pretrained should attach PyTorch Whisper.
+    """Report whether startup should also prepare PyTorch Whisper.
 
-    The default is intentionally false. On Apple Silicon, eager TTS + ASR
-    loading can overcommit unified memory and leave desktop startup stuck
-    at the model-loading stage. ASR backends still load on demand.
+    The opt-in default protects Apple Silicon from filling unified memory with
+    TTS and ASR together, which can leave the desktop waiting indefinitely at
+    model startup. Recognition engines remain available through lazy loading.
     """
-    return _env_flag("OMNIVOICE_PRELOAD_TTS_ASR")
+    preload_requested = _env_flag("OMNIVOICE_PRELOAD_TTS_ASR")
+    return True if preload_requested else False
 
 
 def _is_incomplete_cache_error(exc: BaseException) -> bool:
@@ -2659,9 +2653,9 @@ def _load_model_sync():
         logger.info("Loading VoiceStudio model on device: %s", device)
         preload_asr = should_preload_tts_asr()
         if preload_asr:
-            logger.info("Preloading PyTorch Whisper after TTS model load.")
+            logger.info("PyTorch Whisper will preload after the TTS model is ready.")
         else:
-            logger.info("Skipping PyTorch Whisper preload; ASR will load on demand.")
+            logger.info("PyTorch Whisper preload skipped; ASR will load on demand.")
         _preflight_truncated_weights(checkpoint)
 
         def _load():
@@ -2912,9 +2906,7 @@ def _load_model_sync():
 
             if not flashinfer_applied and should_torch_compile(device):
                 _set_loading("compiling", "Compiling model (torch.compile)…")
-                # #2135: resolved per-GPU — pre-Ampere drops to the
-                # non-cudagraph mode rather than risking a native abort.
-                compile_mode = _resolve_compile_mode()
+                compile_mode = _resolved_compile_mode()
                 try:
                     _model.llm = torch.compile(_model.llm, mode=compile_mode)
                 except Exception as compile_exc:
@@ -3625,45 +3617,87 @@ def _resolve_idle_timeout() -> float:
         return float(IDLE_TIMEOUT_SECONDS)
 
 
+async def run_release(fn, *args):
+    """Run blocking memory-release work on a worker thread (#3558).
+
+    Releasing device memory (gc over the weights, cudaFree waiting on the
+    device, sidecar shutdown) must not run on the event loop, where it stalls
+    every request, health checks included. If the awaiting task is cancelled,
+    this still waits for the worker before re-raising, so a caller holding
+    ``_model_lock`` never releases it while an unload is still running.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.wait({task})
+            except asyncio.CancelledError:
+                continue  # already cancelling; the worker still has to finish
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("memory release failed after cancellation", exc_info=task.exception())
+        raise
+
+
+def _release_idle_model() -> None:
+    """Unload the idle shared model; a failure must not end the idle reaper."""
+    try:
+        unload_shared_model()
+    except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
+        logger.warning("idle model unload failed", exc_info=True)
+
+
+def _release_idle_side_models(idle_timeout: float) -> None:
+    """Release the warm ASR and watermark models that sat unused past the timeout."""
+    # The capture/dictation ASR was never idle-released — so once a user
+    # dictated, its model stayed resident for the life of the process while
+    # the TTS model dutifully freed its 3.8 GB. On a 16 GB Mac that left the
+    # backend sitting at ~6.2 GB idle, which is what tipped it into the
+    # memory pressure that gets it killed mid-generate (#1076/#1092/#1093/
+    # #1101). Give it the same bargain the TTS model already makes. Held
+    # off while a live dictation stream has a lease, so nothing is unloaded
+    # mid-sentence.
+    try:
+        from services.asr_backend import (
+            release_idle_capture_backend,
+            release_transcription_backend,
+        )
+
+        released = release_idle_capture_backend(idle_timeout)
+        # The warm transcription ASR gets the same idle bargain.
+        if release_transcription_backend(idle_timeout) or released:
+            free_vram()
+    except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
+        logger.warning("idle capture-ASR release failed", exc_info=True)
+    # Same bargain for the AudioSeal watermark models, which loaded on the
+    # first embed and were never released. Deliberately only here and not
+    # in the make-room paths: watermarking runs immediately *after* a
+    # generate, so evicting it just before one would only buy a reload.
+    try:
+        from services.watermark import release_idle_models
+
+        release_idle_models(idle_timeout)
+    except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
+        logger.warning("idle watermark-model release failed", exc_info=True)
+
+
 async def idle_worker():
-    torch = _lazy_torch()
     while True:
         await asyncio.sleep(30)
         idle_timeout = _resolve_idle_timeout()
+        # Releasing device memory is blocking work: gc over a multi-GB model,
+        # cudaFree (which waits for the whole device, including a job another
+        # thread is still running), allocator and cuBLAS cleanup. On the event
+        # loop it froze every request, health checks included, until the app
+        # reported the backend "running but not responding" right after
+        # "Idle timeout reached" (#3558). It runs on a worker thread; the model
+        # lock is still held across it, so no load can interleave.
         async with _model_lock:
             if model is not None and time.time() - _last_used > idle_timeout:
                 logger.info("Idle timeout reached. Unloading VoiceStudio model to free VRAM.")
-                unload_shared_model()
-        # The capture/dictation ASR was never idle-released — so once a user
-        # dictated, its model stayed resident for the life of the process while
-        # the TTS model dutifully freed its 3.8 GB. On a 16 GB Mac that left the
-        # backend sitting at ~6.2 GB idle, which is what tipped it into the
-        # memory pressure that gets it killed mid-generate (#1076/#1092/#1093/
-        # #1101). Give it the same bargain the TTS model already makes. Held
-        # off while a live dictation stream has a lease, so nothing is unloaded
-        # mid-sentence.
-        try:
-            from services.asr_backend import (
-                release_idle_capture_backend,
-                release_transcription_backend,
-            )
-
-            released = release_idle_capture_backend(idle_timeout)
-            # The warm transcription ASR gets the same idle bargain.
-            if release_transcription_backend(idle_timeout) or released:
-                free_vram()
-        except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
-            logger.warning("idle capture-ASR release failed", exc_info=True)
-        # Same bargain for the AudioSeal watermark models, which loaded on the
-        # first embed and were never released. Deliberately only here and not
-        # in the make-room paths: watermarking runs immediately *after* a
-        # generate, so evicting it just before one would only buy a reload.
-        try:
-            from services.watermark import release_idle_models
-
-            release_idle_models(idle_timeout)
-        except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
-            logger.warning("idle watermark-model release failed", exc_info=True)
+                await run_release(_release_idle_model)
+        await run_release(_release_idle_side_models, idle_timeout)
 
 def release_tts_side_caches():
     """Drop caches keyed to the TTS model, for when the model itself is released.

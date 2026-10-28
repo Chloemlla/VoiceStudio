@@ -2,13 +2,16 @@ import { clearConversion } from './conversion-state';
 import { cleanup, fireEvent, render, screen, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, expect, it, vi } from 'vitest';
+
 const mock = vi.hoisted(() => ({
   queryError: false,
   retry: vi.fn(),
   convert: vi.fn(),
   ready: true,
   cloning: true as boolean | null,
-  saveAudio: vi.fn(() => Promise.resolve({ canceled: true })),
+  backends: [] as { available: boolean; supports_voice_conversion?: boolean }[],
+  saveAudio: vi.fn(async () => ({ canceled: true })),
+  profiles: null as null | { id: string; name: string; kind: string; ref_audio_path: null }[],
 }));
 vi.mock('@/components/bridge', () => ({
   getBridge: () => ({ files: { saveAudio: mock.saveAudio, revealPath: vi.fn() } }),
@@ -18,7 +21,7 @@ vi.mock('@/hooks/use-engines', () => ({
     isError: mock.queryError,
     error: new Error('Engine query failed'),
     retry: mock.retry,
-    data: mock.queryError ? undefined : {},
+    data: mock.queryError ? undefined : { tts: { backends: mock.backends } },
     activeTtsReady: mock.ready,
     activeTts: { supports_cloning: mock.cloning },
   }),
@@ -32,7 +35,7 @@ vi.mock('@/hooks/use-recording', () => ({
 }));
 vi.mock('@/hooks/use-profiles', () => ({
   useProfiles: () => ({
-    data: [
+    data: mock.profiles ?? [
       { id: 'a', name: 'Alpha', kind: 'clone', ref_audio_path: 'a.wav' },
       { id: 'design', name: 'Captain Crusty', kind: 'design', ref_audio_path: 'design.wav' },
       { id: 'legacy-design', name: 'Legacy Design', kind: 'design', ref_audio_path: null },
@@ -88,6 +91,7 @@ afterEach(() => {
   mock.queryError = false;
   mock.ready = true;
   mock.cloning = true;
+  mock.backends = [];
   vi.clearAllMocks();
 });
 function mount() {
@@ -118,6 +122,7 @@ it('requires source and target, posts independent inputs and plays returned audi
     true,
     expect.any(AbortSignal),
     'Auto',
+    false,
   );
   expect(screen.getByText('Recognized source')).toBeInTheDocument();
 });
@@ -138,6 +143,7 @@ it('sends the picked source language and offers only languages the backend pins'
     true,
     expect.any(AbortSignal),
     'Armenian',
+    false,
   );
 });
 it('cancels obsolete conversion and ignores a late response after source changes', async () => {
@@ -240,6 +246,7 @@ it.each([
     true,
     expect.any(AbortSignal),
     'Auto',
+    false,
   );
 });
 
@@ -256,4 +263,59 @@ it('exports the converted take through the shared native save action', async () 
       suggestedName: 'voicestudio-take-7.wav',
     }),
   );
+});
+it('keep my delivery converts on an installed conversion engine without transcribing', async () => {
+  // The active engine cannot clone; Keep my delivery does not need it to.
+  mock.cloning = false;
+  mock.backends = [{ available: true, supports_voice_conversion: true }];
+  mock.convert.mockResolvedValue({ id: 'k', audio_url: '/audio/k.wav', text: '' });
+  const { upload } = mount();
+  fireEvent.click(screen.getByRole('switch', { name: 'convert.keep_delivery' }));
+  // Transcript-only controls do not apply to a direct conversion.
+  expect(screen.queryByLabelText('convert.source_language')).toBeNull();
+  expect(screen.queryByText('convert.match_duration')).toBeNull();
+  upload();
+  fireEvent.click(screen.getByRole('button', { name: 'Alpha' }));
+  fireEvent.click(screen.getByRole('button', { name: 'convert.convert' }));
+  await screen.findByTestId('convert-result');
+  expect(mock.convert).toHaveBeenCalledWith(
+    expect.any(File),
+    'a',
+    true,
+    expect.any(AbortSignal),
+    'Auto',
+    true,
+  );
+  expect(screen.queryByText('convert.transcript', { exact: false })).toBeNull();
+});
+it('keep my delivery explains the missing conversion engine', () => {
+  mock.backends = [{ available: false, supports_voice_conversion: true }];
+  const { upload } = mount();
+  fireEvent.click(screen.getByRole('switch', { name: 'convert.keep_delivery' }));
+  upload();
+  fireEvent.click(screen.getByRole('button', { name: 'Alpha' }));
+  expect(screen.getByText('convert.keep_delivery_engine_required')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'convert.convert' })).toBeDisabled();
+});
+it('keep my delivery offers only voices with a recording to convert into', () => {
+  mock.backends = [{ available: true, supports_voice_conversion: true }];
+  mount();
+  expect(screen.getByRole('button', { name: 'Legacy Design' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('switch', { name: 'convert.keep_delivery' }));
+  expect(screen.queryByRole('button', { name: 'Legacy Design' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Captain Crusty' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Locked Clone' })).toBeInTheDocument();
+});
+it('keep my delivery explains why no voice is offered when none has a recording', () => {
+  mock.backends = [{ available: true, supports_voice_conversion: true }];
+  mock.profiles = [{ id: 'd', name: 'Design Only', kind: 'design', ref_audio_path: null }];
+  try {
+    mount();
+    expect(screen.getByRole('button', { name: 'Design Only' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('switch', { name: 'convert.keep_delivery' }));
+    expect(screen.getByText('convert.keep_delivery_no_voices')).toBeInTheDocument();
+    expect(screen.queryByText('clone.no_profiles')).toBeNull();
+  } finally {
+    mock.profiles = null;
+  }
 });

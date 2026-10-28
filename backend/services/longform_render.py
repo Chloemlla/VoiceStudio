@@ -41,7 +41,7 @@ import threading
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from services.ffmpeg_utils import local_inputs_only
 
@@ -480,6 +480,8 @@ class SegmentCache:
         vary_repeats: bool = False,
         legacy_voice_sigs: Iterable[dict] = (),
         lease: Optional[CacheLease] = None,
+        gap_sig: str = "",
+        gap_spans: Optional[Callable[[object], bool]] = None,
     ) -> None:
         self.dir = os.path.join(cache_dir, SEGMENT_SUBDIR)
         self.sample_rate = int(sample_rate)
@@ -492,6 +494,11 @@ class SegmentCache:
         # keep counting.
         self.legacy_voice_sigs = [dict(s) for s in legacy_voice_sigs if s]
         self.extra_sig = extra_sig or ""
+        # A render input that only changes segments with gaps inside them
+        # (room tone between paragraphs, #3611): keyed into those segments
+        # alone, so segments without such gaps stay reusable.
+        self.gap_sig = gap_sig or ""
+        self.gap_spans = gap_spans
         # Cache opt-out (#1208): when on, a per-occurrence nonce enters the key
         # so identical repeated lines no longer share one WAV. Off → the nonce
         # is dropped and keys are byte-identical to pre-#1208 (default render).
@@ -509,11 +516,16 @@ class SegmentCache:
             voice_id=span.voice_id,
             voice_sig=sigs.get(span.voice_id or "", ""),
             speed=getattr(span, "speed", None),
-            extra_sig=self.extra_sig,
+            extra_sig=self._extra_sig_for(span),
             nonce=nonce if self.vary_repeats else 0,
         )
         path = os.path.join(self.dir, f"{key}.wav")
         return self.lease.hold(path) if self.lease is not None else path
+
+    def _extra_sig_for(self, span) -> str:
+        if self.gap_sig and self.gap_spans is not None and self.gap_spans(span):
+            return f"{self.extra_sig}\x00{self.gap_sig}"
+        return self.extra_sig
 
     def _existing_path(self, span, nonce: int = 0) -> Optional[str]:
         """The file holding ``span``'s audio under the current key, adopting a
@@ -845,9 +857,11 @@ def build_render_cmd(
     return local_inputs_only(cmd, tool="ffmpeg")
 
 
-# ── Render summary (what a finished render WAS) ─────────────────────────────
+# ── Render summary ───────────────────────────────────────────────────────────
+# A content-free note on how a finished render was made (settings and counts,
+# never script text), shown later in the Projects list.
 
-#: Cap on chapter titles kept in a summary — the library is a list, not a TOC.
+#: At most this many chapter titles are kept in a summary.
 _SUMMARY_MAX_TITLES = 60
 
 
@@ -862,42 +876,45 @@ def _summary_json_value(value):
     return value
 
 
-def render_summary(
-    chapters: list,
-    *,
-    voices: list[dict],
-    engine_id: str = "",
-    language: Optional[str] = None,
-    fmt: str = "",
-    options: Optional[dict] = None,
-) -> dict:
-    """How a render was made, small enough to ride on its ``done`` event.
+def render_summary(chapters, *, voices, engine_id="", language=None, fmt="",
+                   options=None) -> dict:
+    """Describe a finished render without including any of its text.
 
-    A finished file in a library is only useful if it says what it is: which
-    voice, how fast, which engine, how it was joined. ``chapters`` is the plan
-    (objects with ``title`` and ``spans`` carrying ``text``/``speed``);
-    ``voices`` is the already-resolved ``[{"id", "name"}]`` actually used;
-    ``options`` is the render's non-default expressive options, already filtered
-    by the caller (any new knob — join gaps included — shows up here without
-    touching this function).
-    Content-free by design: counts and settings, never the script text.
+    ``chapters`` are objects with ``title`` and ``spans`` (``text``, ``speed``).
+    Only non-blank spans count as lines. ``options`` keeps every entry that is
+    not ``None`` (a seed of 0 or an explicit False is a real choice).
     """
-    spans = [s for c in chapters for s in getattr(c, "spans", [])]
-    spoken = [s for s in spans if (getattr(s, "text", "") or "").strip()]
-    speeds = sorted({round(float(getattr(s, "speed", None) or 1.0), 2) for s in spoken
-                     if math.isfinite(float(getattr(s, "speed", None) or 1.0))})
-    titles = [str(getattr(c, "title", "") or "") for c in chapters][:_SUMMARY_MAX_TITLES]
+    lines = 0
+    words = 0
+    speeds: set = set()
+    for chapter in chapters:
+        for span in chapter.spans:
+            text = (span.text or "").strip()
+            if not text:
+                continue
+            lines += 1
+            words += len(text.split())
+            raw = getattr(span, "speed", None)
+            rate = 1.0 if not raw else raw
+            try:
+                rate = float(rate)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(rate):
+                speeds.add(round(rate, 2))
+    voice_list = []
+    for v in voices or []:
+        if isinstance(v, dict):
+            voice_list.append({"id": str(v.get("id") or ""), "name": str(v.get("name") or "")})
     return {
         "engine": engine_id or "",
-        "voices": [{"id": str(v.get("id") or ""), "name": str(v.get("name") or "")} for v in voices],
+        "voices": voice_list,
         "language": language or "",
         "format": fmt or "",
-        "lines": len(spoken),
-        "words": sum(len(s.text.split()) for s in spoken),
-        "speeds": speeds,
-        # The caller passes only non-default options; keep explicit falsy values
-        # (seed 0, postprocess off) — they are settings, not absences.
-        "options": {str(k): _summary_json_value(v) for k, v in (options or {}).items()
-                    if v is not None},
-        "chapter_titles": titles,
+        "lines": lines,
+        "words": words,
+        "speeds": sorted(speeds),
+        "options": {str(k): _summary_json_value(v)
+                    for k, v in (options or {}).items() if v is not None},
+        "chapter_titles": [str(c.title) for c in list(chapters)[:_SUMMARY_MAX_TITLES]],
     }

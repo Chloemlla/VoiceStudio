@@ -68,6 +68,12 @@ bun run dev
 
 This launches Electron with hot reload. Run source dependency setup explicitly before launching; the supervisor manages backend
 startup; do not launch a second backend. See [Electron setup](../electron/README.md).
+
+For screenshots, use the maintained Electron capture script described in
+[README media](../docs/media/electron/README.md). To share a runnable app, use
+the release installers or `bun run dist`; source users should clone the
+repository with its lockfiles and follow the setup commands above.
+
 CPU-only Linux/Windows hosts automatically select CPU wheels; see
 [CPU setup and overrides](../electron/README.md#running-without-a-gpu).
 When regenerating `uv.lock` for compute variants, preserve unrelated package
@@ -444,8 +450,8 @@ hard rules from the first prompt.
   *implementation* is fine; platform-divergent *default behavior* is a P0.
   Platform-only features go behind an explicit opt-in (Settings toggle, env
   var, or CLI flag).
-- **i18n — all 21 locales (hard rule):** every user-facing string goes through
-  `t('...')` and the key must exist in **all 21** files of the catalog the code
+- **i18n — every locale (hard rule):** every user-facing string goes through
+  `t('...')` and the key must exist in **every** file of the catalog the code
   uses: `electron/src/shared/i18n/locales/` (checked by
   `tests/test_locale_parity.py`) or `electron/src/renderer/src/i18n/locales/`
   (checked by `bun run --cwd electron locale:check`). Translate; don't copy
@@ -463,7 +469,15 @@ hard rules from the first prompt.
     copy is found (`backend/services/media_tools.py`); the huggingface.co vs
     hf-mirror.com reachability probe that picks a download endpoint on
     restricted networks, skipped when the user set an endpoint
-    (`backend/services/endpoint_race.py`); and Hugging Face model downloads
+    (`backend/services/endpoint_race.py`); the dependency install's download
+    of the packages pinned in `uv.lock`, from their locked URLs or the
+    regional mirror the user chose or the Auto region selected, including the
+    parallel multi-connection wheel prefetch
+    (`electron/src/main/wheel-prefetch.ts`; owner-approved 2026-10-27); the
+    Auto region's speed check, which reads the start of one locked wheel from
+    files.pythonhosted.org and mirrors.aliyun.com (one ranged request each,
+    timed out, no retries) and keeps PyPI on any doubt
+    (`electron/src/main/pypi-mirror.ts`); and Hugging Face model downloads
     (gated on install state or an explicit user action).
   - **Windows ROCm setup the user explicitly selects** (owner-approved
     2026-10-26): the matched AMD SDK and PyTorch wheels from `repo.radeon.com`,
@@ -529,6 +543,13 @@ is in the public VoiceStudio repository, it stays available there under
 AGPL-3.0 or another OSI-approved licence (CLA section 4). AI agents can't be co-authors (see
 [Contributing with AI agents](#contributing-with-ai-agents)); the person
 submitting the work signs for it.
+
+For an unsigned pull request, the daily CLA reminder starts a 14-day waiting
+period, displays its UTC deadline, and sends one reminder after seven days. At
+the deadline maintainers may independently address the underlying issue without
+using the contribution. The pull request stays open and signatures remain
+welcome after the deadline. The timer begins when the reminder first detects an
+unsigned contributor, including for existing pull requests.
 
 The **CLA** check comments on your pull request when someone still needs to
 sign. To sign, post this as a new comment, on its own line:

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import uuid
@@ -31,6 +32,11 @@ from services.model_manager import (
 from services.generation_audio import save_generation_wav
 # Compatibility export used by archetype previews and the gallery renderer.
 from services.audio_io import _safe_torchaudio_save
+from services.reference_transcript import (
+    is_legacy_cut_transcript,
+    strip_script_markup,
+    take_reference_transcript,
+)
 from services.binary_preflight import InvalidBinaryError
 from services.model_acceptance import ModelLicenceNotAccepted
 from core import event_bus
@@ -223,54 +229,53 @@ async def _run_with_reference_lease(lease, factory):
             release()
 
 
-_DESIGN_DESCRIPTION_MAX = 2000  # the Voice Design description field's maxLength
+_DESIGN_DESCRIPTION_MAX = 2000  # mirrors maxLength of the description box in the UI
 _DESIGN_DETAIL_MAX = 64
+_DESIGN_RAW_MAX = 4 * _DESIGN_DESCRIPTION_MAX  # JSON overhead allowance for the whole field
+
+
+def _design_picks_ok(picks: object) -> bool:
+    """True when ``picks`` maps known detail categories to short strings."""
+    from core.describe_voice import CATEGORY_ORDER
+
+    if not isinstance(picks, dict):
+        return False
+    return all(
+        key in CATEGORY_ORDER and isinstance(val, str) and len(val) <= _DESIGN_DETAIL_MAX
+        for key, val in picks.items()
+    )
 
 
 def _design_recipe_json(raw: Optional[str]) -> Optional[str]:
-    """Validated Voice Design draft to store with a take, or None (#2389).
+    """Turn the untrusted ``design_recipe`` form value into the text kept in history.
 
-    ``design_recipe`` is display metadata from the Design page: the description
-    as written and the user's explicit picks. It never affects synthesis, so a
-    malformed or oversized value is dropped instead of failing the take. Only
-    known categories and bounded strings survive, and the stored JSON is
-    re-serialized from the parsed value — the raw form field is never
-    persisted. The details the description maps to are derived here with the
-    same mapper as ``/design/describe``, so they always match the description
-    this take was rendered from, even when the page's own mapping had not
-    landed yet.
+    Only the description and the picks are taken from the client, after strict
+    checks. The ``mapped`` section is always recomputed here with the mapper
+    behind ``POST /design/describe``, and the result is serialised afresh, so
+    nothing but validated values is stored. Any problem yields None; this
+    function does not raise, because a bad recipe must never fail a take.
     """
-    if not raw or len(raw) > 4 * _DESIGN_DESCRIPTION_MAX:
+    if not raw or len(raw) > _DESIGN_RAW_MAX:
         return None
-    import json
-
-    from core.describe_voice import CATEGORY_ORDER, parse_description
-
     try:
-        value = json.loads(raw)
-    except ValueError:
-        return None
-    if not isinstance(value, dict):
-        return None
-    description = value.get("description")
-    if not isinstance(description, str) or len(description) > _DESIGN_DESCRIPTION_MAX:
-        return None
-
-    picks = value.get("picks")
-    if not isinstance(picks, dict):
-        return None
-    for category, detail in picks.items():
-        if (
-            category not in CATEGORY_ORDER
-            or not isinstance(detail, str)
-            or len(detail) > _DESIGN_DETAIL_MAX
-        ):
+        doc = json.loads(raw)
+        if not isinstance(doc, dict):
             return None
-    mapped = parse_description(description)["attrs"]
-    return json.dumps(
-        {"description": description, "picks": picks, "mapped": mapped},
-        ensure_ascii=False,
-    )
+        description, picks = doc.get("description"), doc.get("picks")
+        if not isinstance(description, str) or len(description) > _DESIGN_DESCRIPTION_MAX:
+            return None
+        if not _design_picks_ok(picks):
+            return None
+        from core.describe_voice import parse_description
+
+        record = {
+            "description": description,
+            "picks": dict(picks),
+            "mapped": parse_description(description)["attrs"],
+        }
+        return json.dumps(record, ensure_ascii=False)
+    except Exception:  # noqa: BLE001 - metadata only; never block the take
+        return None
 
 
 def _profile_instruct(row, engine_id=None):
@@ -401,7 +406,9 @@ def _resolve_profile_conditioning(row, *, ref_text=None, instruct=None,
     out = {
         "ref_audio_path": None, "ref_text": ref_text, "instruct": instruct,
         "seed": seed, "language": language, "kind": None,
-        "persist_ref_text": False, "language_from_profile": False,
+        "persist_ref_text": False,
+        # True only when `language` was taken from the profile row, not the request.
+        "language_from_profile": False,
         # True when the request edits a design profile rather than
         # re-rendering it: its saved sample no longer describes the voice.
         "diverged": False,
@@ -468,6 +475,7 @@ def _resolve_profile_conditioning(row, *, ref_text=None, instruct=None,
             # cache its result onto the profile so it runs ONCE, not on every
             # generate (#1032 perf regression).
             out["persist_ref_text"] = True
+            out["ref_audio_file"] = row["ref_audio_path"]
         if not out["instruct"] and row["instruct"]:
             out["instruct"] = row["instruct"]
         if out["seed"] is None and row["seed"] is not None:
@@ -488,12 +496,22 @@ def _resolve_profile_conditioning(row, *, ref_text=None, instruct=None,
             prof_lang = None
         if prof_lang and prof_lang != "Auto":
             out["language"] = prof_lang
-            # #2156: record that the caller never asked for this language. The
-            # Older clients omit `language` while their picker reads "Auto", so a
-            # profile-filled language must not be reported back as if the user
-            # had picked it — an engine that can't speak it would otherwise
-            # tell them to "leave language as Auto", which is what they did.
             out["language_from_profile"] = True
+    stored_ref_text = row["ref_text"]
+    if out["ref_text"] and out["ref_text"] == stored_ref_text and is_legacy_cut_transcript(row):
+        # #3062: a voice saved or locked from a take before the fix carries a
+        # cut prefix of the take's text; transcribe the clip instead. The
+        # request may echo the stored value, so both are checked.
+        out["ref_text"] = None
+        if out["ref_audio_path"] and not locked_take and profile_kind != "design":
+            # Replace the cut prefix with the transcript once (#1032). Locked
+            # transcripts are never persisted (unlock must not keep them).
+            out["persist_ref_text"] = True
+            out["replace_ref_text"] = stored_ref_text
+            out["ref_audio_file"] = row["ref_audio_path"]
+    elif out["ref_text"]:
+        # A stored transcript may hold script markup the take never spoke (#3062).
+        out["ref_text"] = strip_script_markup(out["ref_text"]) or None
     return out
 
 
@@ -538,7 +556,8 @@ def _wants_edge_trim(effect_preset, duration=None):
 
 
 def _render_with_pauses(gen_span, segments, sample_rate, *, trim_spans=False,
-                        max_chunk_chars=0, crossfade_ms=0, dropped_sink=None):
+                        max_chunk_chars=0, crossfade_ms=0, dropped_sink=None,
+                        pause_fill=None):
     """Synthesize ``[(text, pause_ms), ...]`` spans and stitch silence between
     them (issue #276).
 
@@ -560,6 +579,9 @@ def _render_with_pauses(gen_span, segments, sample_rate, *, trim_spans=False,
     the whole input, so callers can derive a per-chunk seed. A span that fits
     keeps the plain ``gen_span(text)`` call. ``max_chunk_chars <= 0`` disables
     splitting.
+
+    ``pause_fill`` is ``"silence"`` or ``"room_tone"`` (#3611); None uses the
+    Settings choice (``services.audio_dsp.pause_fill_mode``).
     """
     import torch
 
@@ -602,15 +624,10 @@ def _render_with_pauses(gen_span, segments, sample_rate, *, trim_spans=False,
         total = sum(n for kind, n in items if kind == "s") or 1
         return torch.zeros(total, dtype=torch.float32)
 
-    parts = []
-    for kind, val in items:
-        if kind == "a":
-            parts.append(val)
-        else:
-            shape = list(ref.shape)
-            shape[-1] = val
-            parts.append(torch.zeros(*shape, dtype=ref.dtype, device=ref.device))
-    return torch.cat(parts, dim=-1)
+    from services.audio_dsp import fill_gaps
+
+    # Digital silence or room tone, per Settings (#3611).
+    return torch.cat(fill_gaps(items, sample_rate, pause_fill), dim=-1)
 
 
 def _sanitize_audio(audio_out):
@@ -1445,14 +1462,9 @@ _LANGUAGE_REJECTION_SIGNATURES = (
     "unsupported language code",
 )
 
-# Engine-specific rejections that ALREADY name the engine and what it supports,
-# so #1257's generic rewrite deliberately leaves them alone — re-wrapping them
-# only nests "Engine's own message:" twice. They still have to be recognised as
-# language rejections for #2156's provenance check, which cares about the
-# *cause* of the language, not the quality of the wording.
+# Messages that already name the engine and list what it does support; wrapping
+# them with generic advice would only repeat the same thing twice.
 _SELF_DESCRIBING_LANGUAGE_REJECTIONS = (
-    # services/tts_backend.py: "…doesn't support language='Persian'. Kokoro
-    # supports: …" — mlx-audio's Kokoro, the engine reported in #2156.
     "doesn't support language",
     "does not support language",
 )
@@ -1466,40 +1478,37 @@ _LANGUAGE_REJECTION_RE = re.compile(
 )
 
 
-def _is_language_rejection(text: str) -> bool:
-    """True when an engine failure is about the LANGUAGE it was handed.
+def _classify_language_failure(message: str) -> str:
+    """Sort an engine failure message: "self_describing", "generic" or "other"."""
+    folded = message.casefold()
+    for needle in _SELF_DESCRIBING_LANGUAGE_REJECTIONS:
+        if needle in folded:
+            return "self_describing"
+    for needle in _LANGUAGE_REJECTION_SIGNATURES:
+        if needle in folded:
+            return "generic"
+    return "generic" if _LANGUAGE_REJECTION_RE.search(message) else "other"
 
-    Matched on the message, not the type: the engines multiplex third-party
-    libraries that each raise their own class. Covers the self-describing
-    wordings too — #1257's rewrite skips those, but #2156 still needs to know a
-    language was refused so it can say where that language came from.
-    """
-    low = text.lower()
-    return (
-        any(sig in low for sig in _LANGUAGE_REJECTION_SIGNATURES)
-        or any(sig in low for sig in _SELF_DESCRIBING_LANGUAGE_REJECTIONS)
-        or bool(_LANGUAGE_REJECTION_RE.search(text))
-    )
+
+def _is_language_rejection(text: str) -> bool:
+    """True when an engine failure message is about the language it was handed."""
+    return _classify_language_failure(text) != "other"
 
 
 def _profile_language_rejection_detail(exc: BaseException, language) -> str:
-    """The 400 body for a language the *voice profile* supplied, not the user.
-
-    #2156: the UI omits `language` while its picker reads "Auto", and #533
-    fills that gap from the selected profile. When the active engine can't
-    speak the profile's language the engine's own message tells the user to
-    "leave language as 'Auto'" — which is exactly what they did, so the advice
-    cannot be acted on. Name the real source and the remedies that exist.
-    """
-    return (
-        f"This voice profile is saved with the language '{language}', and the "
-        f"active engine can't speak it. The language picker being on \"Auto\" "
-        f"does not override that — Auto fills the language in from the "
-        f"profile. Set this voice profile's language to one the engine "
-        f"supports, pick a supported language explicitly for this render, or "
-        f"switch engine in Model Catalogue (the VoiceStudio engine has the "
-        f"widest coverage). Engine's own message: {exc}"
-    )
+    """Message for a refusal of a language that came from the voice profile."""
+    parts = [
+        f"This voice profile is saved with the language '{language}', which "
+        "the active engine refuses.",
+        "Leaving the picker on Auto does not override that, because Auto "
+        "falls back to the language stored on the profile.",
+        "Either edit the profile and give it a language the engine supports, "
+        "select a supported language yourself for this render, or "
+        "switch engine in Model Catalogue (the VoiceStudio engine has the "
+        "widest language coverage).",
+        f"Engine's own message: {exc}",
+    ]
+    return " ".join(parts)
 
 
 def _language_rejection_payload(exc, language, *, from_profile):
@@ -1515,63 +1524,48 @@ def _language_rejection_payload(exc, language, *, from_profile):
     return failure
 
 
-def _language_rejection_http_error(exc: BaseException, language, *, from_profile):
-    """The 400 a refused language deserves, wherever the refusal was raised.
-
-    A language an engine cannot speak is never retryable. This keeps the
-    profile-aware error construction in one place for classic and streaming
-    responses.
-    """
+def _language_rejection_http_error(exc, language, *, from_profile) -> HTTPException:
+    """Build (not raise) the 400 for a language refusal."""
     root = _root_language_error(exc)
-    detail = (
-        _profile_language_rejection_detail(root, language)
-        if from_profile else str(exc)
-    )
-    if from_profile:
-        detail = {"code": "profile_language_rejected", "language": language, "message": detail}
-    return HTTPException(status_code=400, detail=detail)
+    if not from_profile:
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=400, detail={
+        "code": "profile_language_rejected",
+        "language": language,
+        "message": _profile_language_rejection_detail(root, language),
+    })
 
 
 def _language_rejection_or(e: BaseException, backend, language):
-    """``e`` rewritten with engine context when it's a language rejection.
-
-    Returns ``e`` unchanged otherwise, so this is safe to wrap any failure in.
-    Deliberately narrower than :func:`_is_language_rejection`: a message that
-    already names its engine and the languages it supports is left alone rather
-    than nested inside a second "Engine's own message:".
-    """
-    text = str(e)
-    low = text.lower()
-    if any(sig in low for sig in _SELF_DESCRIBING_LANGUAGE_REJECTIONS):
+    """Return `e`, or a ValueError carrying engine-aware advice (#1257)."""
+    if _classify_language_failure(str(e)) != "generic":
         return e
-    if not any(sig in low for sig in _LANGUAGE_REJECTION_SIGNATURES) and not (
-        _LANGUAGE_REJECTION_RE.search(text)
-    ):
-        return e
-    engine = getattr(backend, "display_name", None) or getattr(
-        type(backend), "id", type(backend).__name__
+    engine_name = next(
+        (n for n in (getattr(backend, "display_name", None),
+                     getattr(type(backend), "id", None)) if n),
+        type(backend).__name__,
     )
-    requested = f" '{language}'" if language else ""
-    rewritten = ValueError(
-        f"The {engine} engine can't speak{requested}. VoiceStudio offers every "
-        f"language its default engine supports, but each engine covers a "
-        f"different set — pick one this engine supports, or switch engine in "
-        f"Model Catalogue (the VoiceStudio engine has the widest coverage) "
-        f"and generate again. Engine's own message: {e}"
+    quoted = f" '{language}'" if language else ""
+    friendly = ValueError(
+        f"{engine_name} rejected the requested language{quoted}. Engines "
+        "each cover their own set of languages: choose one this engine "
+        "supports, or switch engine in Model Catalogue (the VoiceStudio "
+        "engine has the widest coverage), then regenerate. "
+        f"Engine's own message: {e}"
     )
-    # Keep the engine's own text reachable. #2156's profile message quotes the
-    # engine once; without this it would quote THIS wrapper, repeating both the
-    # engine-switch remedy and "Engine's own message:" twice.
-    rewritten.engine_language_error = e
-    return rewritten
+    friendly.engine_language_error = e
+    return friendly
 
 
 def _root_language_error(exc: BaseException) -> BaseException:
-    """The engine's own rejection, unwrapping :func:`_language_rejection_or`."""
+    """The engine's original error, unwrapping `_language_rejection_or`."""
     return getattr(exc, "engine_language_error", exc)
 
 
-def _persist_profile_ref_text(profile_id: str, ref_text: str) -> None:
+def _persist_profile_ref_text(
+    profile_id: str, ref_text: str, replace: Optional[str] = None,
+    ref_audio_file: Optional[str] = None,
+) -> None:
     """Cache an auto-transcribed reference transcript onto its profile row.
 
     #1032 perf regression: profiles saved without a transcript re-ran a FULL
@@ -1580,13 +1574,23 @@ def _persist_profile_ref_text(profile_id: str, ref_text: str) -> None:
     from the row like a user-entered one. The guarded UPDATE only ever fills
     an empty column — it can never overwrite a transcript the user typed or a
     lock wrote — and a failure is logged, never raised (best-effort, same
-    contract as the transcribe itself)."""
+    contract as the transcribe itself).
+
+    ``replace`` is a cut legacy transcript (#3062) the new one may overwrite;
+    it only matches while the row still holds exactly that value.
+
+    The transcript belongs to the clip that was transcribed, so the row must
+    still be unlocked and, given ``ref_audio_file``, still point at that clip:
+    a lock or an audio replace that lands mid-transcribe (a lock may leave the
+    transcript empty, #3062) must not receive the old clip's words."""
     try:
         with db_conn() as conn:
             updated = conn.execute(
                 "UPDATE voice_profiles SET ref_text=? "
-                "WHERE id=? AND (ref_text IS NULL OR ref_text='')",
-                (ref_text, profile_id),
+                "WHERE id=? AND (ref_text IS NULL OR ref_text='' OR ref_text=?) "
+                "AND COALESCE(is_locked, 0)=0 "
+                "AND (? IS NULL OR ref_audio_path=?)",
+                (ref_text, profile_id, replace or "", ref_audio_file, ref_audio_file),
             ).rowcount
         if updated:
             event_bus.emit("profiles", {"action": "updated", "id": profile_id})
@@ -1689,11 +1693,14 @@ async def _finalize_generation(
     if take_mode != "design":
         design_recipe = None
 
+    # The whole text, not a prefix: a take can become a voice whose reference
+    # transcript is this text, and a cut one ends in words the take never
+    # finishes, which OmniVoice then speaks at every chunk seam (#3062).
     def _write_history():
         with db_conn() as conn:
             conn.execute(
                 "INSERT INTO generation_history (id, text, mode, language, instruct, profile_id, audio_path, duration_seconds, generation_time, seed, design_recipe, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (audio_id, text[:200], take_mode,
+                (audio_id, text, take_mode,
                  language or "Auto", instruct or "", resolved_profile_id,
                  audio_filename, audio_dur, gen_time, used_seed, design_recipe, time.time())
             )
@@ -1822,8 +1829,8 @@ async def generate_speech(
     ref_audio: Optional[UploadFile] = File(None),
     ref_text: Optional[str] = Form(None),
     instruct: Optional[str] = Form(None),
-    # #2389: the Voice Design draft behind this take (description, picks,
-    # mapped details) so reopening it rebuilds the same draft. Metadata only.
+    # Voice Design draft (JSON: description + picks) kept with a design take for
+    # reopening it later. Validated and re-derived server-side; never used to synthesise.
     design_recipe: Optional[str] = Form(None),
     duration: Optional[float] = Form(None),
     num_step: Optional[int] = Form(None),
@@ -2101,10 +2108,10 @@ async def generate_speech(
     ref_lease = None
     used_seed = seed
     resolved_profile_id = None
-    # #2156: True once a profile's stored language fills a language the caller
-    # never sent, so a rejection can name the profile instead of the picker.
+    # True when `language` was filled from the selected profile (not the request).
     language_from_profile = False
     history_mode = None  # profile.kind when a profile drives; else inferred at insert
+    # Malformed or absent recipes become NULL; they never fail the take.
     stored_design_recipe = _design_recipe_json(design_recipe)
     # #1032: profile id to persist an auto-transcribed reference transcript to.
     # Set only for a plain (unlocked) clone profile whose stored ref_text is
@@ -2114,10 +2121,12 @@ async def generate_speech(
     # transcript paired with the original reference); design profiles are
     # excluded (a re-render replaces the sample, stranding a stale transcript).
     persist_ref_text_profile_id = None
+    persist_replace_ref_text = None
+    persist_ref_audio_file = None
     # A transcript the caller sent, before a profile fills in its stored one:
     # an explicit transcript on an over-long clip gets the actionable 400
     # below instead of being silently dropped at the engine boundary (#2281).
-    request_ref_text = (ref_text or "").strip()
+    request_ref_text = strip_script_markup(ref_text)
 
     if profile_id:
         with db_conn() as conn:
@@ -2141,6 +2150,8 @@ async def generate_speech(
             language_from_profile = _cond["language_from_profile"]
             if _cond["persist_ref_text"]:
                 persist_ref_text_profile_id = profile_id
+                persist_replace_ref_text = _cond.get("replace_ref_text")
+                persist_ref_audio_file = _cond.get("ref_audio_file")
     elif ref_audio is not None:
         try:
             suffix = _ref_upload_suffix(ref_audio.filename)
@@ -2151,6 +2162,8 @@ async def generate_speech(
                 ref_lease = _TempReferenceLease(ref_audio_path)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+    # Script markup is never spoken, so it is never part of a transcript (#3062).
+    ref_text = strip_script_markup(ref_text) or None
 
     # #2281: an engine that picks the best passage of a long clip itself
     # (OmniVoice) cannot align a whole-clip transcript. A transcript typed on
@@ -2212,7 +2225,10 @@ async def generate_speech(
         # load + transcribe above happens once per profile, not per generate.
         # Only fills an empty column — a user-entered transcript always wins.
         if ref_text and persist_ref_text_profile_id:
-            _persist_profile_ref_text(persist_ref_text_profile_id, ref_text)
+            _persist_profile_ref_text(
+                persist_ref_text_profile_id, ref_text, replace=persist_replace_ref_text,
+                ref_audio_file=persist_ref_audio_file,
+            )
 
     # #2764: choosing the best 15 s window of a long reference runs the
     # installed recognizer over several windows — minutes on a CPU. Inside the
@@ -2775,15 +2791,9 @@ async def generate_speech(
         raise HTTPException(status_code=503, detail=str(e)) from e
     except ValueError as e:
         logger.error("Validation failed: %s", e)
-        # #2156: the language the engine refused was never chosen by the user —
-        # it came from the selected voice profile because the picker was on
-        # "Auto". The engine's own remedy ("leave language as 'Auto'") is then
-        # unfollowable, so say where the language actually came from. Only this
-        # scope knows that; the engine adapters never see the provenance.
         if language_from_profile and _is_language_rejection(str(e)):
             raise _language_rejection_http_error(
-                e, language, from_profile=True
-            ) from e
+                e, language, from_profile=True) from e
         # Most ValueErrors here are VoiceStudio's own validation messages and
         # are exactly what the user should read. A few are raw library text
         # naming parameters and files the user cannot act on — those get the
@@ -2955,7 +2965,11 @@ def list_history():
             if r["audio_path"] and (not p or not os.path.exists(p)):
                 stale_ids.append(r["id"])
             else:
-                alive.append(dict(r))
+                item = dict(r)
+                # What "save as voice" may use as the take's transcript; ""
+                # asks for the take's audio to be transcribed (#3062).
+                item["transcript"] = take_reference_transcript(item.get("text"))
+                alive.append(item)
         if stale_ids:
             conn.executemany(
                 "DELETE FROM generation_history WHERE id=?",
