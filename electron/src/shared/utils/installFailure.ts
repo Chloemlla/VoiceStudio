@@ -12,8 +12,14 @@
  * to installFailure.corpus.test.ts. installFailure.test.ts fails on any gap.
  */
 
-import { windowsLoadBlock } from './backendOutput';
-import { isNativeFaultExit, normalizeExitCode, normalizeSignal } from './nativeExit';
+import { windowsLoadBlock, withoutBackendLogEvidence } from './backendOutput';
+import {
+  hasFaultEvidence,
+  isExternalKillExit,
+  isNativeFaultExit,
+  normalizeExitCode,
+  normalizeSignal,
+} from './nativeExit';
 
 export const INSTALL_FAILURE_CODES = [
   'WINDOWS_APP_CONTROL_BLOCKED',
@@ -142,7 +148,8 @@ function nativeCode(evidence: FailureEvidence, message: string): InstallFailureC
 
 /** The most specific code the evidence supports, or `UNCLASSIFIED`. */
 export function classifyInstallFailure(evidence: FailureEvidence): InstallFailureCode {
-  const message = evidence.message ?? '';
+  // Quoted log lines are evidence, not the cause (#3724).
+  const message = withoutBackendLogEvidence(evidence.message ?? '');
   const lines = evidence.logLines ?? [];
   if (evidence.stage === 'port_in_use') return 'PORT_IN_USE';
   const issue = evidence.setupIssue ? SETUP_ISSUE_CODES[evidence.setupIssue] : undefined;
@@ -187,7 +194,10 @@ export function classifyInstallFailure(evidence: FailureEvidence): InstallFailur
   // Setup only: a dropped connection in a running engine's log is not an install failure.
   if (evidence.stage === 'setup_required' || evidence.stage === 'installing') {
     if (evidence.stalled) return 'RUNTIME_DOWNLOAD_STALLED';
-    if (DOWNLOAD_INTERRUPTED.test(message) || DOWNLOAD_INTERRUPTED.test(lines.slice(-20).join('\n')))
+    if (
+      DOWNLOAD_INTERRUPTED.test(message) ||
+      DOWNLOAD_INTERRUPTED.test(lines.slice(-20).join('\n'))
+    )
       return 'RUNTIME_DOWNLOAD_INTERRUPTED';
   }
   return 'UNCLASSIFIED';
@@ -203,6 +213,7 @@ export type BackendCause =
   | 'noexec'
   | 'download'
   | 'native_crash'
+  | 'external_kill'
   | 'illegal_instruction'
   | 'missing_env'
   | 'permission'
@@ -219,6 +230,7 @@ export type BackendHintKey =
   | 'backend.hint_noexec'
   | 'backend.hint_download'
   | 'backend.hint_illegal_instruction'
+  | 'backend.hint_external_kill'
   | 'backend.hint_slow_start'
   | 'backend.hint_synced_folder';
 
@@ -267,6 +279,11 @@ export const FAILURE_GUIDANCE: Record<InstallFailureCode, FailureGuidance> = {
   UNCLASSIFIED: NO_GUIDANCE,
 };
 
+function exitCodeInMessage(message: string | undefined): number | null {
+  const text = message ? /exit code (-?\d+)/.exec(message)?.[1] : undefined;
+  return text ? Number(text) : null;
+}
+
 /**
  * Guidance for one failure. An application control block is Smart App Control
  * only when that is known: a work PC's WDAC or AppLocker policy must not be told
@@ -274,10 +291,30 @@ export const FAILURE_GUIDANCE: Record<InstallFailureCode, FailureGuidance> = {
  */
 export function failureGuidance(
   code: InstallFailureCode,
-  { message, smartAppControl }: { message?: string; smartAppControl?: SmartAppControlState } = {},
+  {
+    message,
+    smartAppControl,
+    exitCode,
+    logLines,
+  }: {
+    message?: string;
+    smartAppControl?: SmartAppControlState;
+    exitCode?: number | null;
+    logLines?: readonly string[];
+  } = {},
 ): FailureGuidance {
   const base = FAILURE_GUIDANCE[code];
   let guidance = base;
+  // Exit 0xFFFFFFFF / -1: ended from outside the app. Only claimed when no more
+  // specific cause was named and the output shows no traceback or fault dump.
+  if (
+    base.cause === null &&
+    isExternalKillExit(exitCode ?? exitCodeInMessage(message)) &&
+    !hasFaultEvidence(message) &&
+    !hasFaultEvidence(logLines)
+  )
+    guidance = { cause: 'external_kill', hints: ['backend.hint_external_kill'] };
+  if (message) message = withoutBackendLogEvidence(message);
   if (
     code === 'WINDOWS_APP_CONTROL_BLOCKED' &&
     (smartAppControl === 'on' ||
@@ -318,7 +355,9 @@ export function formatFailureFacts(failure: InstallFailure): string[] {
     failure.downloadedBytes === undefined
       ? undefined
       : `${Math.round(failure.downloadedBytes / 1024 ** 2)} MB received`,
-    failure.stalledSeconds === undefined ? undefined : `no progress for ${failure.stalledSeconds} s`,
+    failure.stalledSeconds === undefined
+      ? undefined
+      : `no progress for ${failure.stalledSeconds} s`,
   ]
     .filter(Boolean)
     .join(', ');

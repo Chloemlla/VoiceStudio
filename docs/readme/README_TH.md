@@ -37,7 +37,7 @@
     <a href="https://github.com/debpalash/Opal?utm_source=voicestudio&utm_medium=sponsor&utm_campaign=strategic-sponsor&utm_content=readme-logo"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/sponsors/opal-dark.svg" /><img src="../../docs/sponsors/opal.svg" alt="Opal" height="32" align="middle" /></picture></a>
     <a href="https://github.com/velixio/supermetry?utm_source=voicestudio&utm_medium=sponsor&utm_campaign=strategic-sponsor&utm_content=readme-logo"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/sponsors/supermetry-dark.svg" /><img src="../../docs/sponsors/supermetry.svg" alt="Supermetry" height="32" align="middle" /></picture></a>
       ·   <sub>สปอนเซอร์พิเศษ</sub> 
-    <a href="https://app.spicrawl.com/signup?utm_source=voicestudio&amp;utm_medium=github_readme&amp;utm_campaign=special_sponsor&amp;utm_content=logo"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/sponsors/spicrawl-dark.svg" /><img src="../../docs/sponsors/spicrawl.svg" alt="Spicrawl" height="32" align="middle" /></picture></a>
+    <a href="https://spicrawl.com?utm_source=voicestudio&amp;utm_medium=github_readme&amp;utm_campaign=special_sponsor&amp;utm_content=logo"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/sponsors/spicrawl-dark.svg" /><img src="../../docs/sponsors/spicrawl.svg" alt="Spicrawl" height="32" align="middle" /></picture></a>
   </p>
 </div>
 
@@ -148,6 +148,8 @@
 ## แพลตฟอร์ม
 
 เลือกระบบของคุณ จากนั้นขยายวิธีการติดตั้ง
+
+เอนจิน GGUF แบบเนทีฟยังรองรับการเร่งความเร็ว Vulkan เฉพาะเอนจินบน GPU ของ AMD, Intel และ NVIDIA ([OmniVoice](../../docs/engines/omnivoice-gguf.md#vulkan-acceleration), [CosyVoice](../../docs/engines/cosyvoice-gguf.md)) OmniVoice GGUF เลือก GPU และขนาดโมเดลโดยอัตโนมัติบน Windows และ Linux หากการตรวจสอบที่ซ่อนอยู่ค้าง การตรวจหา Vulkan จะลองใหม่ด้วยข้อมูลสรุปแบบเนทีฟ ส่วนบิลด์เดสก์ท็อป Windows และ Linux จะล้มเหลวแทนการเผยแพร่โดยไม่มีโมดูล Vulkan อย่างเงียบ ๆ
 
 <a id="install-macos"></a>
 

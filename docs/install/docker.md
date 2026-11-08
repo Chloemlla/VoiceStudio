@@ -159,6 +159,10 @@ All image variants verify installed dependency versions against
 `deploy/uv-overrides.txt` after installation. The check strips surrounding
 whitespace and line endings before parsing requirements, including with
 `packaging` 26.3; an installed version below the required floor still fails the build.
+They also apply the security floors from `pyproject.toml`
+(`deploy/security-constraints.txt`): `deploy/security_floors.py` upgrades any
+package the base image ships below its floor, and a package still below it
+fails the build.
 
 ## Pull and run (AMD GPU / ROCm)
 
@@ -485,7 +489,7 @@ as root, so files it adds there are root-owned on the host.
   follows `main`, not releases. For a released version, pull `:stable` or the
   exact `:X.Y.Z` tag and recreate the container. The running version is shown
   in **Settings → About → Version** (read live from the backend).
-- **Checking which version is running:** `docker exec <container> python3 -c "import importlib.metadata; print(importlib.metadata.version('omnivoice'))"`, or hit the `/health` endpoint — it returns `{"status": "ok", "device": ..., "version": "0.3.x"}`. Use the container name listed by `docker compose ps` (or `omnivoice` for the `docker run` examples).
+- **Checking which version is running:** `docker exec <container> python3 -c "import importlib.metadata; print(importlib.metadata.version('omnivoice'))"`, or hit the `/health` endpoint — it returns `{"status": "ok", "device": ..., "engine": ..., "version": "0.3.x"}`, where `device` is what the active TTS engine generates on (`vulkan (...)`, `cuda (...)`, `rocm (...)`, `xpu (...)`, `mps` or `cpu`). GPU names are included only when the runtime identifies them or the host has a single accelerator family; otherwise the label is the bare family. An unverified native device is `unknown`; a conservative CPU timeout budget does not establish CPU execution. Explicit native CPU selection still reports `cpu`. Use the container name listed by `docker compose ps` (or `omnivoice` for the `docker run` examples).
 - **Watching startup:** the port answers within about a second of container
   start, but heavy initialization (PyTorch, API routes, database migration)
   continues in the background. During that window `/health` returns **503**

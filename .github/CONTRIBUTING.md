@@ -37,7 +37,7 @@ Read it before opening a proposal; the licence check in particular ends most of 
 
 - [Git](https://git-scm.com/)
 - `curl` (used by the Bun / uv / rustup install one-liners on macOS and Linux)
-- [Node.js 22](https://nodejs.org/) (Electron development and validation scripts)
+- [Node.js 22.12.0 or newer](https://nodejs.org/) (Electron development and validation scripts)
 - [Bun](https://bun.sh/) (frontend package manager)
 - [uv](https://docs.astral.sh/uv/) (Python environment manager)
 - [ffmpeg](https://ffmpeg.org/) (audio/video processing)
@@ -122,6 +122,41 @@ the last 20 lines of `omnivoice.log` before the dev stack shuts down — so the
 cause doesn't scroll away with the terminal. The same death is also reported
 as a crash notice in the UI the next time the backend starts (see
 [docs/install/troubleshooting.md §14c](../docs/install/troubleshooting.md)).
+
+### Clean local development and app data
+
+Close VoiceStudio and its backend/dev servers before cleaning. From the checkout:
+
+```bash
+bun clean --dry-run       # list exact paths without deleting
+bun clean                # permanently delete the listed state
+bun run clean:all        # equivalent command
+make clean:all DRY_RUN=1 # Make preview; omit DRY_RUN=1 to delete
+```
+
+Plain `make` still starts the release flow; cleanup must be selected explicitly.
+For Make, any non-empty `DRY_RUN` value enables preview mode unless it is
+exactly one of `0`, `false` or `no`; `true`, `yes`, unfamiliar values and
+several words (such as `false 0`) all preview.
+
+The script needs Git and Node, but no installed project dependencies. It removes
+project `node_modules`, Python virtual environments (including custom names
+identified by `pyvenv.cfg`), tool caches, Electron/native/mobile build outputs,
+test reports, logs and checkout-local runtime data. It also removes the default
+VoiceStudio Electron profile, OmniVoice backend data and persisted settings.
+**This deletes saved voices, projects, generated audio, account sessions and
+managed engines in those locations.**
+These default profiles are shared with installed VoiceStudio and other source checkouts.
+
+Tracked files, root `.env` files, Git metadata, agent configuration, research
+clones and nested Git repositories are preserved. Symlink targets are never
+followed. Shared Hugging Face caches (including Windows' `%LOCALAPPDATA%/OmniVoice/hf_cache`),
+global package-manager caches, other apps' profiles, installed applications,
+phone/simulator data and OS keychain entries are excluded. Custom external
+data/runtime/model locations are also excluded; inspect and remove those
+separately if needed. The preview lists exactly what will be removed.
+Failed deletions return a nonzero exit code. Run `bun run dev` to reinstall
+project dependencies afterwards.
 
 ### Retired desktop (Tauri)
 
@@ -513,6 +548,25 @@ test-only PR. Docker Hub overview edits still publish through the small
     and the optional local-model smoke test never acquire models or use the network.
     The VC++ Redistributable is a manual prerequisite; opted-in Windows ROCm
     source setup checks it locally and stops when it is missing.
+  - **Optional engine installs the user starts** (owner-approved 2026-11-07):
+    clicking Install or Repair on an optional engine fetches its upstream
+    source from GitHub (a shallow clone of the branch tip, then the reviewed
+    commit, or that commit's source archive when the clone or checkout fails),
+    plus any helper sources the engine needs as GitHub archives at pinned
+    commits (CosyVoice: Matcha-TTS, PyWorld and World); a uv-managed Python from
+    `astral-sh/python-build-standalone` GitHub Releases (or the regional mirror)
+    when the engine needs a version that is not installed; its Python packages
+    from PyPI or the user's chosen mirror; the host's PyTorch build from
+    `download.pytorch.org` (`cu128` or `cpu`; on Linux AMD hosts, engines with
+    ROCm support use the ROCm index that publishes their Torch version, which a
+    user-set `OMNIVOICE_TORCH_INDEX` replaces), where uv may also resolve other
+    packages that index carries; and, for engines that fetch them during
+    install, their Hugging Face weights at a reviewed revision
+    (`backend/services/sidecar_install.py`). Engines that skip that step
+    download weights on first use, under the Hugging Face model downloads above. Torch is pinned
+    to an exact version; other packages follow the engine's own requirements
+    (exact, ranged or unpinned). Nothing is hash-pinned. Checking whether an
+    engine is installed downloads nothing.
   - **Galleries the user opens or enables:** the community gallery manifest
     from jsDelivr plus its GitHub-hosted previews
     (`backend/api/routers/community.py`); the voice-preview gallery's signed

@@ -100,7 +100,7 @@ Prerequisites:
 - **Bun** — `curl -fsSL https://bun.sh/install | bash`
 - **uv** — `curl -LsSf https://astral.sh/uv/install.sh | sh` (it provides the
   managed Python 3.11 the backend uses)
-- **Node.js 22+**, **Rust / Cargo**
+- **Node.js 22.12.0 or newer**, **Rust / Cargo**
   (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`), and the
   native development libraries used by the Electron native helper. If you use
   rustup, reopen the shell or run `source "$HOME/.cargo/env"` first.
@@ -128,6 +128,14 @@ Then, from a clone of the repository:
 ```bash
 git clone https://github.com/debpalash/VoiceStudio.git
 cd VoiceStudio
+node electron/scripts/node-version.mjs
+```
+
+If the Node check fails, stop here, upgrade Node.js, and reopen your terminal
+before continuing. Then install dependencies and prepare the local backend
+(skip API setup when using an external backend or an Intel Mac):
+
+```bash
 bun install
 bun run setup:api   # create the Python environment with uv
 bun run dev         # Electron with hot reload; it starts and supervises the backend
@@ -395,8 +403,35 @@ Notes:
   work, so RDNA4 (gfx12xx) cards need a ROCm build that lists them instead.
   When the build lacks your card, VoiceStudio's GPU architecture notification
   names the exact value to try, or says that no remap exists.
-- ZLUDA (CUDA-on-ROCm translation) can work but is unsupported here — prefer a
-  native ROCm wheel.
+- Engines on the GPU: every PyTorch engine that runs on an NVIDIA GPU also
+  claims ROCm (OmniVoice, IndexTTS, VoxCPM2, MOSS-TTS-Nano, CosyVoice,
+  dots.tts, Confucius4, PyTorch Whisper, FunASR, NeMo Parakeet). On a ROCm
+  host the one-click installs of VoxCPM2, MOSS-TTS-Nano, CosyVoice,
+  Confucius4, dots.tts and IndexTTS put the ROCm build of the engine's own
+  pinned torch in its venv, from the PyTorch ROCm index that publishes that
+  version (2.7 → `rocm6.3`, 2.8 → `rocm6.4`, 2.11 → `rocm7.2`). An install
+  made before this may still have a CUDA or CPU wheel. A user-selected
+  sidecar repair builds and verifies a separate environment, keeping the existing
+  installation available until the replacement succeeds. The previous environment
+  remains on disk until the engine is uninstalled. A custom `OMNIVOICE_TORCH_INDEX`
+  is used exactly as provided; it must carry
+  the sidecar’s pinned Torch and torchaudio versions. The installer estimates
+  disk space using the selected Torch wheel's downloaded and unpacked sizes,
+  in addition to the engine's normal estimate. Measurements of the published
+  Linux x86-64 Python 3.11 wheels on 2026-11-07 were 25.101 GiB for
+  [Torch 2.7.0](https://download.pytorch.org/whl/rocm6.3/torch/),
+  14.873 GiB for [2.8.0](https://download.pytorch.org/whl/rocm6.4/torch/)
+  and 18.999 GiB for [2.11.0](https://download.pytorch.org/whl/rocm7.2/torch/); the guard rounds up
+  and uses the largest measured value when the version is unknown. These are
+  estimates: custom wheels, cache locations and other dependencies can differ.
+  Vulkan
+  engines (OmniVoice GGUF, CosyVoice GGUF, whisper.cpp) need no ROCm at all.
+  Faster-Whisper and WhisperX use CTranslate2, whose stock build is
+  NVIDIA-only, so on Linux ROCm they stay on the CPU; use PyTorch Whisper,
+  which auto-detection already prefers on ROCm.
+- ZLUDA (CUDA-on-ROCm translation) is not used or supported: its PyTorch
+  support is incomplete and its cuDNN path can be slower than the CPU. Use
+  the native ROCm builds above.
 
 Tracking issue: [#124](https://github.com/debpalash/VoiceStudio/issues/124).
 

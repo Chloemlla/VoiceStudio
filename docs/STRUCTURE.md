@@ -36,7 +36,7 @@ VoiceStudio/
 │   │   └── setup/               setup-wizard endpoints and model acquisition
 │   ├── core/                    shared infrastructure: configuration, persistence, job/event plumbing,
 │   │                            auth and CSRF, safe paths, analytics consent, version and diagnostics
-│   ├── services/                116 modules of business logic spanning speech, dubbing, DSP, GPU dispatch,
+│   ├── services/                121 modules of business logic spanning speech, dubbing, DSP, GPU dispatch,
 │   │                            engine selection and loaded-model ownership
 │   ├── engines/                 per-engine adapters: audiocpp, confucius4, cosyvoice_gguf,
 │   │                            cosyvoice_subprocess, dots_tts, indextts, moss_tts_nano_subprocess,
@@ -101,6 +101,8 @@ VoiceStudio/
 │   ├── Dockerfile               CUDA baseline; BASE_IMAGE and GPU_FLAVOR let CI build ROCm too
 │   ├── docker-compose.yml       local one-command stack
 │   ├── torch-constraints.txt    image-specific torch-family lock
+│   ├── security-constraints.txt security floors for the Docker and Colab installs
+│   ├── security_floors.py       raises and checks installed packages against those floors
 │   ├── dockerhub-overview.md    release-synchronised Docker Hub description
 │   └── install-worker/          Cloudflare worker serving voicestudio.sh/install; embeds both installers
 │                                from scripts/ (see docs/install/script.md)

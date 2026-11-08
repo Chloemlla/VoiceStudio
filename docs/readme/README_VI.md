@@ -37,7 +37,7 @@
     <a href="https://github.com/debpalash/Opal?utm_source=voicestudio&utm_medium=sponsor&utm_campaign=strategic-sponsor&utm_content=readme-logo"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/sponsors/opal-dark.svg" /><img src="../../docs/sponsors/opal.svg" alt="Opal" height="32" align="middle" /></picture></a>
     <a href="https://github.com/velixio/supermetry?utm_source=voicestudio&utm_medium=sponsor&utm_campaign=strategic-sponsor&utm_content=readme-logo"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/sponsors/supermetry-dark.svg" /><img src="../../docs/sponsors/supermetry.svg" alt="Supermetry" height="32" align="middle" /></picture></a>
       ·   <sub>Nhà tài trợ đặc biệt</sub> 
-    <a href="https://app.spicrawl.com/signup?utm_source=voicestudio&amp;utm_medium=github_readme&amp;utm_campaign=special_sponsor&amp;utm_content=logo"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/sponsors/spicrawl-dark.svg" /><img src="../../docs/sponsors/spicrawl.svg" alt="Spicrawl" height="32" align="middle" /></picture></a>
+    <a href="https://spicrawl.com?utm_source=voicestudio&amp;utm_medium=github_readme&amp;utm_campaign=special_sponsor&amp;utm_content=logo"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/sponsors/spicrawl-dark.svg" /><img src="../../docs/sponsors/spicrawl.svg" alt="Spicrawl" height="32" align="middle" /></picture></a>
   </p>
 </div>
 
@@ -148,6 +148,8 @@ Mọi thứ ở trên đều miễn phí, chạy trên phần cứng của bạn
 ## Nền tảng
 
 Chọn hệ thống của bạn, sau đó mở rộng phương pháp cài đặt.
+
+Các bộ máy GGUF gốc cũng hỗ trợ tăng tốc Vulkan riêng cho từng bộ máy trên GPU AMD, Intel và NVIDIA ([OmniVoice](../../docs/engines/omnivoice-gguf.md#vulkan-acceleration), [CosyVoice](../../docs/engines/cosyvoice-gguf.md)). OmniVoice GGUF tự động chọn GPU và kích thước mô hình trên Windows và Linux. Nếu phép kiểm tra ẩn bị treo, quá trình phát hiện Vulkan thử lại bằng bản tóm tắt gốc; các bản dựng máy tính Windows và Linux sẽ thất bại thay vì âm thầm được phát hành mà thiếu mô-đun Vulkan.
 
 <a id="install-macos"></a>
 
