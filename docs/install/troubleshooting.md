@@ -14,6 +14,9 @@ them. Include the selected engine and GPU/driver when reporting a native crash;
 the excerpt is bounded, so attach the full scrubbed log if more context is needed.
 Home-directory prefixes and credential patterns are scrubbed before the local
 crash journal is written, as well as before reports are displayed or exported.
+When the backend exits without a native fault, the report also carries its last 20
+stderr lines (bounded, scrubbed), and a hard exit logs an `[exit-forensics]` line
+naming the code and the calling file.
 
 <a id="self-diagnosis"></a>
 
@@ -321,7 +324,7 @@ unpinned reinstall can itself resolve a drifted pair
 ([#1357](https://github.com/debpalash/VoiceStudio/issues/1357)):
 
 ```
-uv pip install --python .venv --reinstall torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 transformers
+uv pip install --python .venv --reinstall torch==2.10.0 torchaudio==2.10.0 torchvision==0.25.0 transformers
 ```
 
 run in the project folder. The versions mirror `deploy/torch-constraints.txt`
@@ -494,74 +497,40 @@ ready. The desktop app sits on "starting backend", `/health` returns 503, and
 `/startup/progress` shows `ml_imports` active. From source you see `import
 torch` die with a native access violation rather than a Python traceback.
 
-**Cause:** unknown so far. The pinned `torch 2.8.0+cu128` build advertises
-`sm_120` in `torch.cuda.get_arch_list()`, and on some Blackwell cards it runs
-CUDA fine. The Windows machines in #1931 fault inside `import torch` itself,
-natively, before Python gets a chance to raise; upgrading the torch trio to
-2.9.x made that stop.
+**Cause:** the `torch 2.8.0+cu128` build that VoiceStudio 0.5.7 and earlier
+pinned. It advertises `sm_120` in `torch.cuda.get_arch_list()` and runs CUDA
+fine on some Blackwell cards, but the Windows machines in #1931 fault inside
+`import torch` itself, natively, before Python can raise. Torch 2.9 and later
+do not.
 
-**See what your build ships:**
-
-```bash
-uv run python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"
-```
-
-With `sm_120` listed, kernels exist for your GPU and the crash comes from
-somewhere else in torch's native start-up. If the command itself dies, that is
-the symptom described above. The upgrade is the known workaround in both cases.
-
-**Fix:** bump `torch`, `torchaudio` and `torchvision` to 2.9.x in one step. A
-partial bump leaves them mismatched and fails with `RuntimeError: operator
-torchvision::nms does not exist` (covered in the next section).
-
-Edit **both** pin lists, keeping them identical:
-
-- `[tool.uv] constraint-dependencies` in `pyproject.toml`
-- `deploy/torch-constraints.txt`
-
-```
-torch==2.9.1
-torchaudio==2.9.1
-torchvision==0.24.1
-```
-
-Then relock and reinstall:
+**Fix:** update VoiceStudio. 0.5.8 and later pin torch 2.10.0, torchaudio
+2.10.0 and torchvision 0.25.0, which also closes CVE-2026-24747. The cu128 build
+covers the same GPUs as before (`sm_70` through `sm_120`), so no older card
+loses kernels. On a source checkout, `git pull`, then:
 
 ```bash
-uv lock
 uv sync
 ```
 
-Confirm the GPU is actually usable before relaunching:
+Confirm the GPU is usable before relaunching:
 
 ```bash
-uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_capability())"
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_capability())"
 ```
 
-`True (12, 0)` means the kernels are there.
+`2.10.0+cu128 True (12, 0)` means the kernels are there. If you had hand-edited
+the pins to 2.9.x, as earlier versions of this page suggested, drop that edit:
+the default is newer now.
 
-**Why both files:** `constraint-dependencies` governs `uv sync` / `uv lock` /
-`uv run`, and `deploy/torch-constraints.txt` governs the `uv pip install`
-paths (Docker and the Colab notebook), which ignore project-level uv settings.
-`tests/test_torch_constraints_are_applied.py` fails if the two drift, so a
-one-sided edit is caught rather than shipped.
-
-**What you do not have to do:** `torchaudio 2.9` removed `set_audio_backend()`,
-which VoiceStudio used to call unguarded — that turned this upgrade into a
-different hard startup crash (`AttributeError` inside `ml_imports`). It is
-guarded now, so the upgrade path above is clean on a current checkout.
-
-**Keeping the change:** the pins are shared project files, so a `git pull` that
-touches them may conflict with your edit or silently replace it. Re-apply the
-edit after pulling until the default pin moves. It has not moved because a newer
-torch can stop shipping kernels for older GPUs, and which architectures go
-differs per release and CUDA variant: the pinned 2.8.0+cu128 starts its list at
-`sm_70`, while the cu128 list captured in #1285 still included `sm_61`. The
-default only changes once newer torch is verified on those older cards.
+**Keep the trio together:** `torch`, `torchaudio` and `torchvision` move in one
+step. A partial bump fails with `RuntimeError: operator torchvision::nms does
+not exist` (covered in the next section). The pins live in two lists that must
+stay identical: `[tool.uv] constraint-dependencies` in `pyproject.toml` (for
+`uv sync`, `uv lock` and `uv run`) and `deploy/torch-constraints.txt` (for the
+`uv pip install` paths in Docker and the Colab notebook).
+`tests/test_torch_constraints_are_applied.py` fails if they drift.
 
 **Linked issue:** [#1931](https://github.com/debpalash/VoiceStudio/issues/1931)
-— thanks to the reporter for the full diagnosis, including the verification
-commands above.
 
 ## 5c. OmniVoice is not preloaded at startup
 
@@ -748,7 +717,7 @@ dots-tts) is tracked in [#974](https://github.com/debpalash/VoiceStudio/issues/9
 
 **Symptom:** first-run setup stops at **Installing dependencies** with a failure
 that mentions `torch` and a `download.pytorch.org` (or `download-r2.pytorch.org`)
-URL — e.g. `Failed to download torch==2.8.0+cu128 …win_amd64.whl`. The app then
+URL — e.g. `Failed to download torch==2.10.0+cu128 …win_amd64.whl`. The app then
 won't launch.
 
 **Cause:** on Windows/Linux NVIDIA machines, VoiceStudio installs the CUDA PyTorch
@@ -1270,14 +1239,19 @@ UnicodeDecodeError: 'gbk' codec can't decode byte 0x80 in position 11: illegal m
 **Cause:** Python 3.11's `site` module opens every `.pth` file in
 `site-packages` using the ANSI code page — even with `PYTHONUTF8=1` set. When
 the managed environment lives under a Windows user profile whose account name
-contains non-ASCII characters (most commonly CJK), `uv sync`'s editable
-install `.pth` embeds that path in UTF-8, which is rarely a valid byte
-sequence in the active ANSI code page (`gbk`, `shift_jis`, etc.), and the
-interpreter can never start (#1783).
+contains non-ASCII characters (most commonly CJK), or a source checkout sits in
+a non-ASCII folder (for example a Thai folder name on a `cp874` system),
+`uv sync`'s editable install `.pth` embeds that path in UTF-8, which is rarely
+a valid byte sequence in the active ANSI code page (`gbk`, `shift_jis`,
+`cp874`, etc.), and the interpreter can never start (#1783). In a source
+checkout, `bun run dev` and `bun run setup:api` fail with
+``Querying Python at `…\.venv\Scripts\python.exe` failed``.
 
 **Fix:** VoiceStudio now rewrites those `.pth` entries to ASCII-only paths after
 each runtime install and before each launch, so existing environments recover
-on the next start. If the backend still cannot start, keep the app
+on the next start. Source checkouts get the same repair: `bun run setup:api`
+heals `.venv` before every `uv` step, and `bun run dev` / `bun run dev:api`
+heal it before starting the backend, so a manual `uv sync` is covered too. If the backend still cannot start, keep the app
 environment on an ASCII-only path. On the first-run
 setup screen, press **Change…** beside **App environment** and pick a folder
 such as `C:\VoiceStudio` before setup starts. An environment that cannot start

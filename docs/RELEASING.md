@@ -62,10 +62,9 @@ Electron publication uses these GitHub Actions secrets:
   Play internal testing is not a release channel either.
 - The repository `GITHUB_TOKEN` for draft creation and asset uploads.
 - `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` for the Docker Hub mirror.
-- `POSTHOG_PROJECT_TOKEN` (secret) and `POSTHOG_HOST` (repository variable),
-  baked into packaged builds as the analytics token and host. They override the
-  in-repo publishable token; analytics still sends nothing without a yes at the
-  first-run consent prompt.
+- No analytics secret is needed: the destination is the public Supermetry site
+  id in `config/analytics.json`. Analytics still sends nothing without a yes at
+  the first-run consent prompt.
 
 The archived `TAURI_SIGNING_PRIVATE_KEY*` secrets are retained only so the final
 Tauri release can be audited. The Tauri release workflow has been removed; every
@@ -219,7 +218,7 @@ type the tag name.
 - **Two runs, because `main` only changes through pull requests.** The first
   run bumps the three version files in lockstep, runs `uv lock`, writes the
   `CHANGELOG.md` section from `[Unreleased]` (a stable release renames it; a
-  beta copies it), runs the version guards, commits on `release/vX.Y.Z[-beta.N]`
+  beta copies it, pointing its download links at the beta's own release files), runs the version guards, commits on `release/vX.Y.Z[-beta.N]`
   and opens its pull request. Once that merges, run the helper again with the
   same version: `main` already has it, so it changes nothing and only tags.
 - **Draft:** the tag push builds a draft release; nothing is public.
@@ -279,7 +278,10 @@ strings), add a
 the version (`prepare_electron_release.py --print-channel`), stamps it into every
 platform feed, publishes with `--prerelease --latest=false`, and dispatches
 Docker with `promote_stable=false`. Any other prerelease shape (`-rc`, `-alpha`)
-is rejected.
+is rejected. The release is refused if it carries another channel's update
+feed (a stable `electron-stable-*` or `latest*` feed on a beta, a beta feed on
+stable), and after publishing the workflow checks that `releases/latest` still
+points at the newest stable.
 
 Promoting to Stable is a normal `vX.Y.Z` release from `main`. Beta users roll
 onto it automatically because the updater compares semver (`X.Y.Z-beta.N` sorts

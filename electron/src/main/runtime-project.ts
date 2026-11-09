@@ -7,6 +7,8 @@ export { nvidiaDriverPresent, cudaOnlyPackages } from '../../scripts/torch-varia
 import { inspectRuntimeInterpreter } from './runtime-interpreter';
 import { RuntimeLaunchRefusedError, runtimeLaunchRefusal } from './runtime-launch-refusal';
 import { WINDOWS_ROCM_IMPORT_TIMEOUT_MS } from './runtime-probe';
+import { RUNTIME_IMPORT_PROBE, lastImportAttempted } from './runtime-import-probe';
+export { RUNTIME_IMPORT_PROBE, lastImportAttempted } from './runtime-import-probe';
 import {
   windowsRocmSelected,
   windowsRocmStamp,
@@ -66,11 +68,11 @@ const SOURCES = [
 ];
 export const UV_VERSION = '0.12.13';
 export const CUDNN8_COMPAT_PIN = 'nvidia-cudnn-cu12==8.9.7.29';
-export const ROCM_TORCH_INDEX = 'https://download.pytorch.org/whl/rocm6.4';
+export const ROCM_TORCH_INDEX = 'https://download.pytorch.org/whl/rocm7.1';
 export const ROCM_TORCH_PINS = [
-  'torch==2.8.0',
-  'torchaudio==2.8.0',
-  'torchvision==0.23.0',
+  'torch==2.10.0',
+  'torchaudio==2.10.0',
+  'torchvision==0.25.0',
 ] as const;
 /**
  * `uv pip install` arguments that swap the main venv's torch stack for the
@@ -81,7 +83,7 @@ export const ROCM_TORCH_PINS = [
  * PyTorch's index, which carries no Pillow 13, so the project's
  * `pillow>=13.0.0` override made the swap unsatisfiable and a ROCm install
  * never finished (#3158, #3418). The local tag comes from the index name
- * (`…/rocm6.4` → `+rocm6.4`), mirroring `sidecar_install._rocm_pin_args`; a
+ * (`…/rocm7.1` → `+rocm7.1`), mirroring `sidecar_install._rocm_pin_args`; a
  * mirror without such a name keeps the bare pins, and the tagged build still
  * wins by PEP 440 ordering. Kept equal to `scripts/setup.py`.
  */
@@ -126,9 +128,9 @@ export function rocmTorchOptIn(platform: NodeJS.Platform = process.platform): bo
  */
 export const CPU_TORCH_INDEX = 'https://download.pytorch.org/whl/cpu';
 export const CPU_TORCH_PINS = [
-  'torch==2.8.0+cpu',
-  'torchaudio==2.8.0+cpu',
-  'torchvision==0.23.0+cpu',
+  'torch==2.10.0+cpu',
+  'torchaudio==2.10.0+cpu',
+  'torchvision==0.25.0+cpu',
 ] as const;
 export const CPU_TORCH_ARGS = [
   '--extra-index-url',
@@ -180,33 +182,6 @@ export const OUTDATED_SYSTEM_LIBRARY_CODE = 'OUTDATED_SYSTEM_LIBRARY';
 export const MIN_MSVCP140_VERSION = [14, 40] as const;
 /** Windows exit status for an access violation, unsigned and signed. */
 const ACCESS_VIOLATION_EXIT_CODES = new Set<unknown>([3221225477, -1073741819]);
-const RUNTIME_IMPORT_MODULES = [
-  'fastapi',
-  'uvicorn',
-  'omnivoice',
-  'faster_whisper',
-  'sentencepiece',
-  'torch',
-  'torchaudio',
-  'torchvision',
-] as const;
-const IMPORT_MARKER = 'VOICESTUDIO_IMPORT=';
-/**
- * Imports every runtime module, announcing each one first. A native import that
- * dies with an access violation (exit code 3221225477) leaves no traceback, so
- * the last announcement is the only evidence of which module crashed (#3293).
- */
-export const RUNTIME_IMPORT_PROBE = RUNTIME_IMPORT_MODULES.map(
-  (name) => `print('${IMPORT_MARKER}${name}', flush=True)\nimport ${name}`,
-).join('\n');
-/** The module an import probe was loading when its output stopped, if it said. */
-export function lastImportAttempted(output: unknown): string | null {
-  const marked = String(output ?? '')
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith(IMPORT_MARKER))
-    .at(-1);
-  return marked ? marked.slice(IMPORT_MARKER.length).trim() || null : null;
-}
 function importFailure(error: unknown): Error {
   const failure = error as { code?: unknown; message?: unknown; stdout?: unknown } | null;
   const module = lastImportAttempted(failure?.stdout);

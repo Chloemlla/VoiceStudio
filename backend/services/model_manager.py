@@ -1581,8 +1581,8 @@ def _rocm_arch_remedy(device_arch: str, arch_list) -> str:
 
     install = (
         f"Install a ROCm PyTorch build that lists {device_arch}: "
-        "OMNIVOICE_TORCH_VARIANT=rocm setup installs torch 2.8.0 from the "
-        "rocm6.4 index, which includes gfx1200/gfx1201 (RX 9000 series)."
+        "OMNIVOICE_TORCH_VARIANT=rocm setup installs torch 2.10.0 from the "
+        "rocm7.1 index, which includes gfx1200/gfx1201 (RX 9000 series)."
     )
     if "HSA_OVERRIDE_GFX_VERSION" in device_arch:
         return "Remove or correct HSA_OVERRIDE_GFX_VERSION, or " + install[0].lower() + install[1:]
@@ -3658,7 +3658,9 @@ async def run_release(fn, *args):
 def _release_idle_model() -> None:
     """Unload the idle shared model; a failure must not end the idle reaper."""
     try:
-        unload_shared_model()
+        # A native extension or library calling sys.exit() during the unload
+        # would otherwise end the whole backend silently (#3887).
+        contain_system_exit(unload_shared_model, "idle model unload")()
     except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
         logger.warning("idle model unload failed", exc_info=True)
 
@@ -3679,10 +3681,13 @@ def _release_idle_side_models(idle_timeout: float) -> None:
             release_transcription_backend,
         )
 
-        released = release_idle_capture_backend(idle_timeout)
-        # The warm transcription ASR gets the same idle bargain.
-        if release_transcription_backend(idle_timeout) or released:
-            free_vram()
+        def _release_asr():
+            released = release_idle_capture_backend(idle_timeout)
+            # The warm transcription ASR gets the same idle bargain.
+            if release_transcription_backend(idle_timeout) or released:
+                free_vram()
+
+        contain_system_exit(_release_asr, "idle capture-ASR release")()
     except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
         logger.warning("idle capture-ASR release failed", exc_info=True)
     # Same bargain for the AudioSeal watermark models, which loaded on the
@@ -3692,7 +3697,9 @@ def _release_idle_side_models(idle_timeout: float) -> None:
     try:
         from services.watermark import release_idle_models
 
-        release_idle_models(idle_timeout)
+        contain_system_exit(
+            lambda: release_idle_models(idle_timeout), "idle watermark-model release"
+        )()
     except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
         logger.warning("idle watermark-model release failed", exc_info=True)
 

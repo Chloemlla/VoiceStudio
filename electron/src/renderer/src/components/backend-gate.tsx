@@ -34,6 +34,7 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { ConfirmDialog } from '@/features/clone/confirm-dialog';
 import { RemoteBackendSettings } from '@/features/settings/remote-backend-settings';
+import { ExistingPythonSettings } from '@/features/settings/existing-python-settings';
 import { useBackendStatus } from '@/hooks/use-backend-status';
 import { isBackendBusy } from '@shared/utils/backendStage';
 import { backendCauseAction } from '@shared/utils/backendHint';
@@ -50,6 +51,13 @@ import { cn } from '@/lib/utils';
 import type { RuntimeRegion } from '../../../preload/index.d';
 import { getBridge, isMac } from './bridge';
 import { ExternalLink } from './external-link';
+import {
+  MODEL_HEADROOM_GIB,
+  SetupHardware,
+  SetupHelpLinks,
+  SetupUpdateNotice,
+  SetupVersion,
+} from './setup-extras';
 
 interface BackendGateProps {
   children: ReactNode;
@@ -246,6 +254,7 @@ export function BackendGate({ children, repairDock }: BackendGateProps) {
         <span className="whitespace-nowrap text-sm font-medium tracking-tight">
           {t('app.name')}
         </span>
+        <SetupVersion />
       </header>
       <div
         data-testid="backend-gate-scroll"
@@ -341,6 +350,7 @@ export function BackendGate({ children, repairDock }: BackendGateProps) {
           {setup ? (
             <>
               <p className="max-w-sm text-sm text-muted-foreground">{t('backend.setup_hint')}</p>
+              <SetupUpdateNotice />
               {status.smartAppControlWarning && !status.failure ? (
                 <p
                   className="max-w-sm text-sm text-warning"
@@ -350,6 +360,7 @@ export function BackendGate({ children, repairDock }: BackendGateProps) {
                 </p>
               ) : null}
               <SetupAnalyticsConsent analyticsDisabled={status.analyticsDisabled} />
+              {!unsupportedPlatform && !wrongArchitecture ? <ExistingPythonSettings /> : null}
               {wrongArchitecture ? (
                 <p className="max-w-sm text-sm text-muted-foreground">
                   {t('backend.setup_wrong_architecture')}
@@ -366,7 +377,7 @@ export function BackendGate({ children, repairDock }: BackendGateProps) {
                 ) : (
                   <Collapsible open={connectionOpen} onOpenChange={setConnectionOpen}>
                     <CollapsibleTrigger render={<Button variant="outline" className="w-full" />}>
-                      {t('settings.remote_backend_title')}
+                      {t('setup.use_other_computer')}
                       <ChevronDownIcon className="size-4" />
                     </CollapsibleTrigger>
                     <CollapsibleContent>
@@ -465,6 +476,15 @@ export function BackendGate({ children, repairDock }: BackendGateProps) {
                           })}
                         </p>
                       ) : null}
+                      {status.runtimeFreeGib !== undefined &&
+                      status.setupRequiredGib !== undefined &&
+                      status.runtimeFreeGib >= status.setupRequiredGib &&
+                      status.runtimeFreeGib < status.setupRequiredGib + MODEL_HEADROOM_GIB ? (
+                        <p data-testid="setup-model-space" className="mt-0.5 text-xs text-warning">
+                          {t('setup.models_space')}
+                        </p>
+                      ) : null}
+                      <SetupHardware hardware={status.setupHardware} />
                       {status.runtimeStorage && (
                         <dl className="mt-2 space-y-0.5 text-xs text-muted-foreground">
                           {(['data', 'models', 'temp'] as const).map((kind) => (
@@ -625,6 +645,10 @@ export function BackendGate({ children, repairDock }: BackendGateProps) {
           {(installing || setupFailed || (setup && status.runtimeInterrupted)) && (
             <SetupSupport key={`${status.stage}:${status.message ?? ''}`} status={status} />
           )}
+          {setup || installing ? <SetupHelpLinks /> : null}
+          {/* A saved interpreter that broke later fails the launch, not setup: keep
+              the way back to the managed runtime (or another interpreter) here. */}
+          {failed && !status.remote ? <ExistingPythonSettings onlyWhenSelected /> : null}
           {failed && <ReportBug error={status.message} />}
           {failed && <CrashDetails />}
           <ConfirmDialog
