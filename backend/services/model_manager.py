@@ -1635,6 +1635,10 @@ def check_device_compatibility():
             f"PyTorch build. Supported architectures: {', '.join(arch_list)}. "
             + _rocm_arch_remedy(device_arch, arch_list)
         )
+    from core.device_caps import is_legacy_nvidia_arch, legacy_nvidia_advice
+
+    if is_legacy_nvidia_arch(device_arch):
+        return False, legacy_nvidia_advice(device_name, device_arch)
     return False, (
         f"{device_name} ({device_arch}) is not supported by this PyTorch build. "
         f"Supported architectures: {', '.join(arch_list)}. "
@@ -3690,6 +3694,16 @@ def _release_idle_side_models(idle_timeout: float) -> None:
         contain_system_exit(_release_asr, "idle capture-ASR release")()
     except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
         logger.warning("idle capture-ASR release failed", exc_info=True)
+    # Engines that keep a model server between requests (the opt-in OmniVoice
+    # GGUF resident server) hold VRAM in a child process the paths above never see.
+    try:
+        from services.tts_backend import release_idle_resident_servers
+
+        contain_system_exit(
+            lambda: release_idle_resident_servers(idle_timeout), "idle resident-server release"
+        )()
+    except Exception:  # noqa: BLE001 — the reaper must never kill idle_worker
+        logger.warning("idle resident-server release failed", exc_info=True)
     # Same bargain for the AudioSeal watermark models, which loaded on the
     # first embed and were never released. Deliberately only here and not
     # in the make-room paths: watermarking runs immediately *after* a

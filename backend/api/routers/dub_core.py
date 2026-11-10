@@ -615,18 +615,28 @@ def dub_abort(job_id: str):
     """Cancel in-flight upload/transcribe subprocesses for a job."""
     with _active_procs_lock:
         had_procs = bool(_active_procs.get(job_id))
-    _kill_job_procs(job_id)
+    # Flag first: a kill that lands before it reads as an encoder crash to the
+    # hardware-encode fallback, which would restart the work after the sweep.
+    job = _dub_jobs.get(job_id)
+    had_flag = job is not None and "aborted" in job
+    prior_flag = job.get("aborted") if job is not None else None
+    if job is not None:
+        job["aborted"] = True
     try:
+        _kill_job_procs(job_id)
         had_task = task_manager.cancel_task(job_id)
     except Exception as exc:
+        # A failed abort leaves the job retryable, not marked aborted.
+        if job is not None:
+            if had_flag:
+                job["aborted"] = prior_flag
+            else:
+                job.pop("aborted", None)
         logger.warning("Dub task cancellation failed")
         raise HTTPException(
             status_code=503,
             detail="The dub could not be fully aborted. Retry the abort operation.",
         ) from exc
-    job = _dub_jobs.get(job_id)
-    if job is not None:
-        job["aborted"] = True
     # Cancellation is idempotent: a missing active task means it already
     # stopped between the renderer aborting its stream and this request.
     return {
@@ -1317,7 +1327,9 @@ def _recover_from_phrase_embeddings(
 async def _reanalyze_speakers(job_id: str, job: dict, num_speakers: Optional[int], cancelled):
     """Refresh acoustic labels on existing cues; never rerun ASR or rewrite text."""
     import copy
-    from services.speaker_clone import auto_profile_id, build_cast_sources, extract_speaker_clones
+    from services.speaker_clone import (
+        auto_profile_id, build_cast_sources, extract_speaker_clones, voice_fallback_warning,
+    )
     from services.diarization_native import NativeSortformer
     from api.routers.dub_generate import resolve_consistent_ref
 
@@ -1454,6 +1466,9 @@ async def _reanalyze_speakers(job_id: str, job: dict, num_speakers: Optional[int
                 if ambiguous:
                     warnings.append({"source":"speaker_clone","detail":
                         "Some cues lack a single verified speaker; their audio was excluded from new source-voice references."})
+                fallback = voice_fallback_warning(segments,sources)
+                if fallback:
+                    warnings.append(fallback)
                 return copy.deepcopy(job)
         finally:
             # This finally runs on the worker, after all native work finishes,
@@ -1628,6 +1643,12 @@ async def dub_transcribe_stream(
                 "speaker_clones": job.get("cast_sources", {}),
                 "cast_sources": job.get("cast_sources", {}),
             })
+            # A dropped connection may have lost the live warning; recompute it
+            # from the saved job so Retry still names the default-voice speakers.
+            from services.speaker_clone import voice_fallback_warning
+            replay_warning = voice_fallback_warning(job["segments"], job.get("cast_sources"))
+            if replay_warning:
+                yield _sse_event("warning", replay_warning)
             yield _sse_event("done", {})
             return
 
@@ -2561,6 +2582,13 @@ async def dub_transcribe_stream(
                     _job_dir, dub_pipeline.REFERENCE_RUNS_DIRNAME,
                     os.path.basename(str(previous_ref_run)),
                 ), job)
+            # Name every speaker left without a source voice, including when
+            # extraction failed outright (#3419). After the commit above, so
+            # a disconnect here cannot discard the references the job holds.
+            from services.speaker_clone import voice_fallback_warning
+            fallback_warning = voice_fallback_warning(final_segs, commit["cast_sources"])
+            if fallback_warning:
+                yield _sse_event("warning", fallback_warning)
 
         # Restore TTS model to GPU now that ASR is done. unload() blocks
         # (gc.collect + CUDA cache drop) — run it on the GPU pool so the

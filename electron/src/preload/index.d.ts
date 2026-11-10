@@ -8,6 +8,13 @@ import type { InstallFailure } from '../shared/utils/installFailure';
  * (src/preload/index.ts) and the renderer. Both tsconfigs include it.
  */
 
+export interface TerminalCommandStatus {
+  supported: boolean;
+  linked: boolean;
+  onPath: boolean;
+  command: string;
+}
+
 export type BackendStage =
   | 'setup_required'
   | 'installing'
@@ -165,7 +172,7 @@ export interface UpdateState {
   /** Absent when this build cannot switch channels (Store builds, dev runs). */
   channel?: UpdateChannel;
   /** Set only while status is 'unsupported': why this build cannot update itself. */
-  unsupportedReason?: 'development' | 'store' | 'package-manager';
+  unsupportedReason?: 'development' | 'store' | 'package-manager' | 'no-update-config';
   availableVersion?: string;
   notes?: string | null;
   progress: number;
@@ -473,6 +480,12 @@ export interface VoiceStudioBridge {
     scan(token: string): Promise<WatchEntry[]>;
     enqueue(request: WatchUpload): Promise<void>;
     stop(token: string): Promise<void>;
+  };
+  /** The `voicestudio` terminal command (macOS and Linux direct downloads). */
+  terminal: {
+    status(): Promise<TerminalCommandStatus>;
+    /** Explicit user action: add ~/.local/bin to the user's shell profiles. */
+    addToPath(): Promise<TerminalCommandStatus>;
   };
   app: {
     /** From the root package.json via __APP_VERSION__ / extraMetadata. */

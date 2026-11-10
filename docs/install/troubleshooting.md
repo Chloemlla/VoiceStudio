@@ -81,7 +81,7 @@ The runtime folder is on a drive mounted with `noexec`. Choose a folder on anoth
 
 ### `RUNTIME_DOWNLOAD_STALLED`
 
-A runtime download received no data for a long time. Retry keeps finished packages and resumes large multi-connection downloads, but other partial downloads start again. Try another network, turn off your VPN or choose another download region.
+A runtime download received no data for a long time. Setup stops a download that gets no data for 2 minutes, and repeats the install up to twice by itself after a stall or a temporary server error (such as 504 Gateway Timeout) before it shows this. Retry keeps finished packages and resumes large multi-connection downloads, but other partial downloads start again. Try another network, turn off your VPN or choose another download region.
 
 ### `RUNTIME_DOWNLOAD_INTERRUPTED`
 
@@ -89,7 +89,7 @@ The connection dropped during a runtime download, as in `peer closed connection 
 
 ### `DISK_FULL`
 
-The drive holding the runtime is full. Free space or choose another folder, then retry.
+The drive holding the runtime is full. The setup screen shows the free and needed space beside the runtime folder and offers **Choose another folder** as its main action; or free space and press **Retry**.
 
 ### `RUNTIME_FOLDER_DENIED`
 
@@ -117,7 +117,7 @@ This source checkout's `.venv` is missing or incomplete. Run `bun run setup:api`
 
 ### `BROKEN_VENV`
 
-The managed Python environment is damaged and automatic repair did not fix it. Use **Clean & Retry** on the setup screen.
+The managed Python environment is damaged and automatic repair did not fix it. Use **Clean & Retry** under **More fixes** on the setup screen.
 
 ### `NATIVE_ACCESS_VIOLATION`
 
@@ -480,6 +480,14 @@ and a notice shows the error.
 
 Sidecar engines, which run in their own environments, don't use this result.
 
+## Older NVIDIA cards (GTX 900/1000 series)
+
+**Symptom:** a Maxwell or Pascal card (GTX 900 and 1000 series, compute capability below 7.0, such as a GTX 1060 or 1080 Ti) is found, but the app runs on the CPU. The GPU report in **Settings** says the PyTorch build no longer supports that GPU generation.
+
+**Cause:** the PyTorch build VoiceStudio ships (the cu128 build) includes kernels only for compute capability 7.0 and newer. Reinstalling another CUDA build or updating the driver does not add them.
+
+**What works:** PyTorch engines run on the CPU. Engines with their own Vulkan runtime (audio.cpp, CosyVoice GGUF, OmniVoice GGUF) can use the GPU; **Settings → GPU acceleration** lists them. Install one under **Settings → Models**. See [audio.cpp](../engines/audio-cpp.md).
+
 ## 5a. Backend exits on the first `/generate` on an older NVIDIA GPU
 
 **Symptom:** the backend starts, `/health` identifies the GPU, and model preload succeeds, but the first generation ends with `RemoteDisconnected` or “remote end closed.” Later requests get `ConnectionRefused`, often without a Python traceback. Tesla T4 machines, including common Colab hosts, are a typical example.
@@ -729,7 +737,7 @@ nor the **China** download region redirects it: PyTorch's index has no mirror.
 
 **Fix, in order:**
 
-1. **Clean & Retry.** Large downloads frequently succeed on a second attempt —
+1. **Clean & Retry** (under **More fixes**). Large downloads frequently succeed on a second attempt —
    VoiceStudio already retries each request 5× with long timeouts, and a fresh
    attempt reuses every file that finished downloading. The CUDA `torch` wheel
    downloads over several connections and resumes from the parts it already
@@ -1300,8 +1308,8 @@ VoiceStudio now tries, in order: the default GitHub host → a gh-proxy mirror �
    tick *"Add Python to PATH"*), then relaunch — VoiceStudio will use it.
 2. **Point at a reachable mirror** for the Python download:
    - `UV_PYTHON_INSTALL_MIRROR=https://gh-proxy.com/https://github.com/astral-sh/python-build-standalone/releases/download`
-3. **In China, keep Auto-detect or pick the China download region** on the
-   setup screen. Auto-detect uses the Aliyun mirror when a quick speed check
+3. **In China, keep Auto-detect or pick the China download region** under
+   **Options** on the setup screen. Auto-detect uses the Aliyun mirror when a quick speed check
    finds it faster; China always uses it. Packaged setup then downloads the PyPI wheels pinned in `uv.lock` from the Aliyun
    PyPI mirror (`mirrors.aliyun.com`). PyTorch wheels still come from
    `download-r2.pytorch.org`.
@@ -1383,7 +1391,7 @@ normally.
    downloads. Setup picks it when no NVIDIA driver is found; set
    `OMNIVOICE_TORCH_VARIANT=cpu` to choose it.
 
-The **download region** choice on the setup screen changes where the Python
+The **download region** choice (under **Options** on the setup screen) changes where the Python
 interpreter downloads from. With **China** selected, setup also downloads the
 `files.pythonhosted.org` wheels from the Aliyun PyPI mirror
 (`mirrors.aliyun.com`), which serves the same files: each one is still checked
@@ -1439,9 +1447,12 @@ Credentials, signed URL query strings and home-directory usernames are redacted.
 The retained history is bounded: when full, it keeps the initial context and
 latest lines, marking omitted content. Review the file before attaching it.
 
-After **five minutes without download progress**, setup offers **Report a bug**,
-**Get help on Discord**, and **Check download connection**. These also appear
-immediately after an installation failure. The warning clears when progress
+The setup screen keeps one help row: **Download setup log**, the install guide,
+troubleshooting, **Report a problem** and **Get help on Discord**. After **five
+minutes without download progress**, setup shows a stalled-download notice with
+**Check download connection**, and the report link becomes a prefilled **Report a
+bug**. After an installation failure the same report appears immediately and the
+connection check is under **More fixes**. The warning clears when progress
 resumes; it does not cancel the installation. GitHub opens a prefilled report
 for you to review and submit; attach the downloaded log manually. Discord opens
 the official server. No report or log is submitted automatically.
@@ -1788,3 +1799,11 @@ Windows or another program refused access to the port, often a reserved range
 (Hyper-V, WSL, Docker). Check with
 `netsh interface ipv4 show excludedportrange protocol=tcp`, then set
 `OMNIVOICE_PORT` to a different free port.
+
+## Settings → Updates says "This build cannot update itself"
+
+Self-update needs the `app-update.yml` file that release installers ship in the app's resources folder. A custom, repackaged or locally built app without it used to fail with `ENOENT … app-update.yml` when you pressed Download; it now says so and offers no download. Install a release build from the [Releases page](https://github.com/debpalash/VoiceStudio/releases/latest) (or a beta from the same page) to get updates.
+
+## Backend exits with an illegal instruction on an older CPU
+
+The effects library `pedalboard` can crash on CPUs without AVX2. VoiceStudio now loads it once in a separate process first; if that fails, effects stages that depend on it (filters, compressor, reverb, gate, EQ) are skipped and the audio is left unmodified, while the leveler and limiter keep working.

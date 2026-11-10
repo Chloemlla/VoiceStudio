@@ -40,6 +40,12 @@ microphone interface; if VoiceStudio cannot hear you, connect it once:
 sudo snap connect voicestudio:audio-record
 ```
 
+The snap runs through XWayland by default because native Wayland crashed it on
+some GNOME releases. To try native Wayland, launch it with
+`VOICESTUDIO_SNAP_OZONE_PLATFORM=wayland voicestudio`; on a revision built by
+Snapcraft Builds the variable is not read, so use
+`voicestudio --ozone-platform=wayland` instead.
+
 <a id="install-appimage"></a>
 
 Download a package from the
@@ -61,6 +67,17 @@ The AppImage uses the static AppImage runtime, so it does not need `libfuse2`.
 The [shell installer](script.md) (`curl -fsSL https://voicestudio.sh/install | sh`)
 downloads the latest AppImage, verifies it against the release's
 `SHA256SUMS.txt`, and installs it as `~/.local/bin/VoiceStudio`.
+
+Current builds include the unified terminal command. Debian packages expose
+`voicestudio` through `/usr/bin` and the shell installer through `~/.local/bin`.
+A downloaded AppImage links `~/.local/bin/voicestudio` on first launch and, if
+your shell does not already search `~/.local/bin`, adds it to your shell profile
+once. Open a new terminal afterwards. `voicestudio` opens
+the app, and commands start it in the background when it is not running; no
+separate Python installation is needed. Existing custom launchers are not
+replaced; see [Terminal command](script.md#terminal-command).
+The .deb also keeps the pre-rename `voicestudio-electron` command as a link to
+`voicestudio`, so existing scripts keep working.
 
 **.deb:**
 
@@ -121,8 +138,12 @@ Prerequisites:
   sudo pacman -S --needed base-devel alsa-lib xdotool libxtst libx11 libxkbcommon wayland openssl
   ```
 
-  `bun run dist` also needs `readelf` (binutils) and `zsyncmake` (zsync) to
-  embed AppImage update information.
+  `bun run dist` also needs `readelf` (binutils) and `zsyncmake` (part of the
+  `zsync` package) to embed AppImage update information.
+
+  The dictation helper links the shared `libxdo` (through `enigo`'s default
+  `xdo` feature). nixpkgs' `xdotool` ships no shared `libxdo`, so the Nix flake
+  builds it — see [Nix / NixOS](#nix--nixos) below.
 
 Then, from a clone of the repository:
 
@@ -177,12 +198,19 @@ installs. Model and Python runtime setup remain explicit in the app.
 
 ### Nix / NixOS
 
-A community-maintained Nix flake provides development shells and an FHS environment for running from source (not tested in CI). See the [Nix / NixOS guide](nix.md):
+A community-maintained Nix flake (built by a non-blocking CI check) provides development shells,
+an FHS environment for NixOS and a Nix-built Linux x64 app. See the
+[Nix / NixOS guide](nix.md):
 
 ```bash
-nix develop .#fhs   # recommended for NixOS
+nix develop .#fhs   # recommended for NixOS; `nix develop` for the plain shell
 bun run dev
 ```
+
+`nix run .` launches the Nix-built app from a checkout. Its first run installs
+uv's managed Python like the AppImage does, which on NixOS needs
+[nix-ld](https://github.com/nix-community/nix-ld). Its launcher sets
+`VOICESTUDIO_DISABLE_UPDATER=1`; update it with Nix.
 
 ## ChromeOS, iPad and other devices
 

@@ -90,7 +90,11 @@ import {
   type RemoteSession,
 } from './remote-backend';
 import { toolSearchDirs, toolSearchDirsAsync } from './tool-path';
-import { SetupProgressTracker, cleanProcessLine } from './setup-progress';
+import {
+  SetupProgressTracker,
+  cleanProcessLine,
+  downloadStallExceeded,
+} from './setup-progress';
 import { SetupDownloadReporter, inFlightDownloadBytes } from './setup-downloads';
 import { scrubText } from '../shared/utils/scrub';
 import { DEFAULT_BACKEND_PORT } from '../../../config/app-config.mjs';
@@ -1402,6 +1406,15 @@ export class BackendSupervisor extends EventEmitter<{
         return;
       }
 
+      // A terminal or another shell can own a backend whose early-bind
+      // health endpoint is still starting. Wait for that owner instead of
+      // staging its sources or launching a competing process.
+      if (await this.probe(this.baseUrl, true)) {
+        if (gen !== this.generation) return;
+        void this.waitUntilReady(gen, startupBudgetMs());
+        return;
+      }
+
       // A previous fallback is only useful while its backend still answers.
       // Once it is gone, retry the configured endpoint before spawning anew.
       if (this.localPort !== this.configuredPort) {
@@ -1665,22 +1678,48 @@ export class BackendSupervisor extends EventEmitter<{
               return;
             }
             this.child = child;
+            this.setupProgress.restartStallClock();
+            let stallError: Error | undefined;
+            // uv waits 900 s on a silent socket; stop it sooner so the retry can start (#3950).
+            const stallWatch = setInterval(() => {
+              const snapshot = this.setupProgress.snapshot();
+              if (stallError || !downloadStallExceeded(snapshot)) return;
+              stallError = Object.assign(
+                new Error(
+                  `Download timed out: no data for ${snapshot.stalledSeconds} s from ${snapshot.downloadHost ?? 'the download server'}`,
+                ),
+                { code: 'DOWNLOAD_STALLED' },
+              );
+              this.pushLog('err', stallError.message);
+              // Not a backend shutdown: setup's uv has no server to tell.
+              void this.killChild();
+            }, 5_000);
             let capturedStdout = '';
+            let capturedStderr = '';
+            child.stderr?.on('data', (chunk: Buffer | string) => {
+              capturedStderr = (capturedStderr + chunk.toString()).slice(-8_192);
+            });
             child.stdin?.on('error', () => {});
             child.stdout?.on('data', (chunk: Buffer | string) => {
               capturedStdout = (capturedStdout + chunk.toString()).slice(-65_536);
             });
             this.attachLineReader(child.stdout, 'out');
             this.attachLineReader(child.stderr, 'err');
-            child.on('error', launchFailed);
+            child.on('error', (err) => {
+              clearInterval(stallWatch);
+              launchFailed(err);
+            });
             child.on('close', (code) => {
+              clearInterval(stallWatch);
               if (this.child === child) this.child = null;
-              if (code === 0) resolve(capturedStdout);
+              if (stallError) reject(stallError);
+              else if (code === 0) resolve(capturedStdout);
               else
                 reject(
                   Object.assign(new Error(`Runtime setup exited with code ${code}`), {
                     code,
                     stdout: capturedStdout,
+                    stderr: capturedStderr,
                   }),
                 );
             });
