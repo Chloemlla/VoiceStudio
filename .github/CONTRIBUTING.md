@@ -386,6 +386,10 @@ bun run check:electron
 bun run --cwd electron build
 bun run --cwd electron test:desktop-ui
 
+# The bundled `voicestudio` command, built as installers build it (needs uv).
+# The Desktop UI job runs this on all three systems.
+node electron/tests/cli-bundle-smoke.mjs
+
 # Offline renderer smokes (what CI runs): start the smoke server, then the runner.
 # New *-smoke.mjs files are classified automatically (chromium = runs here,
 # *-real-smoke = needs a live backend, _electron = drives the real app);
@@ -400,7 +404,9 @@ OMNIVOICE_PORT=3999 VOICESTUDIO_UI_URL=http://localhost:3912 PLAYWRIGHT_CHANNEL=
 # with 500, with a network error, or with broken JSON. It fails on a spinner
 # left after requests settle, a button still greyed out after its write failed,
 # a failed write with no visible feedback, an uncaught error, or a
-# console.error. Fix the button; KNOWN_FINDINGS stays empty.
+# console.error. Fix the button; KNOWN_FINDINGS stays empty. A request pending
+# for 30 s (a hung backend or dev server) stops that fault mode at once with one
+# "stalled" finding naming the click or screen that started it.
 OMNIVOICE_PORT=3999 VOICESTUDIO_UI_URL=http://localhost:3912 \
   VOICESTUDIO_CRAWL_MODES=http-500 VOICESTUDIO_CRAWL_ROUTES=/clone \
   node electron/tests/ui-crawler.mjs
@@ -482,7 +488,9 @@ Documentation-only and test-only changes skip runtime tests, desktop/mobile buil
 and Docker image rebuilds on pull requests and pushes to `main`. The required
 `Tests (backend + frontend)` check reports the explicit skip so branch protection
 still works. Mixed changes, workflow/build configuration, dependencies and bundled
-app icons still run their normal checks; unknown or truncated change lists run
+app icons still run their normal checks, as do changes to the UI crawler's
+harness (`CI_HARNESS` in `.github/scripts/ci_scope.py`), so the crawler job checks
+its own changes; unknown or truncated change lists run
 all checks. Manual runs and scheduled audits remain full runs. CLA, commit identity
 and secret scanning still run. The same skip applies while a pull request's
 opener has not signed the CLA (see [Contribution licensing](#contribution-licensing)). Run changed tests locally before submitting a

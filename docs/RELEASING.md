@@ -110,7 +110,8 @@ version only after validation.
    release workflow adds a `### Contributors` block to the GitHub Release notes
    by itself: everyone who committed since the latest stable release, plus the
    authors of PRs merged in that span (ranked by commits; bots, AI agents and
-   unlinked placeholders are never listed). It does **not** find bug reporters,
+   unlinked placeholders are never listed). A second or later beta first lists
+   who is new since the previous beta, then that full list. It does **not** find bug reporters,
    and it skips the block when the changelog section already has a
    `### Contributors` heading, so write one by hand when you want roles or
    reporters credited.
@@ -342,6 +343,14 @@ signature and stapled ticket. Do not accept `allow_unsigned` merely to close a
 signing report. Tauri signing keys cannot sign Electron packages. Existing
 artifact names, app IDs, data paths, and updater channels are compatibility
 contracts.
+
+Windows installers can instead be signed through SignPath Foundation: set the
+`SIGNPATH_API_TOKEN` secret and the `SIGNPATH_ORGANIZATION_ID`,
+`SIGNPATH_PROJECT_SLUG` and `SIGNPATH_SIGNING_POLICY_SLUG` variables, and leave
+`ELECTRON_WINDOWS_CSC_LINK` unset. The Windows build leg then signs the installer,
+and `electron/scripts/apply-signed-windows.mjs` regenerates the blockmap and the
+feed's sha512/size before upload. Policy and owner checklist:
+[code-signing-policy.md](code-signing-policy.md).
 
 ## Retry and rollback
 

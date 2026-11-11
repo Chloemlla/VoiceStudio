@@ -37,6 +37,36 @@ def test_probe_success_path_unchanged(fake_cli, monkeypatch):
     assert (selected.name, selected.target, fallback) == ("Vulkan0", "vulkan", None)
 
 
+def test_reported_split_output_selects_vulkan(fake_cli, monkeypatch):
+    """#3980: ggml logs on stderr, the table (bus ids, CRLF) on stdout."""
+    monkeypatch.setenv(
+        "FAKE_ERR",
+        "ggml_vulkan: Found 1 Vulkan devices:\r\nggml_vulkan: 0 = NVIDIA GeForce GTX 1080 Ti (NVIDIA)\r\n",
+    )
+    monkeypatch.setenv(
+        "FAKE_OUT",
+        "Available GGML backends:\r\n"
+        "  Vulkan0    0000:01:00.0         NVIDIA GeForce GTX 1080 Ti\r\n"
+        "  CPU        -                    Intel(R) Core(TM) i5-10400F CPU @ 2.90GHz\r\n",
+    )
+    selected, fallback = bootstrap.selected_backend()
+    assert (selected.name, selected.target, fallback) == ("Vulkan0", "vulkan", None)
+
+
+def test_cpu_only_listing_says_why_vulkan_is_missing(fake_cli, monkeypatch):
+    monkeypatch.setenv("FAKE_ERR", "ggml_vulkan: No devices found.\n")
+    monkeypatch.setenv("FAKE_OUT", "Available GGML backends:\n  CPU  -  i5\n")
+    monkeypatch.setenv("FAKE_EXIT", "0")
+    selected, fallback = bootstrap.selected_backend()
+    assert selected.name == "CPU"
+    assert "runtime said: ggml_vulkan: No devices found." in fallback
+    bootstrap._PROBE_CACHE.clear()
+    monkeypatch.setenv("FAKE_ERR", "")
+    monkeypatch.setenv("FAKE_EXIT", "5")
+    _, fallback = bootstrap.selected_backend()
+    assert "exit code 5" in fallback and "no Vulkan line" in fallback
+
+
 def test_nonzero_exit_with_a_device_list_is_still_usable(fake_cli, monkeypatch):
     monkeypatch.setenv("FAKE_OUT", "Vulkan0 - GTX 1080 Ti\n")
     monkeypatch.setenv("FAKE_EXIT", "3")
@@ -192,3 +222,58 @@ def test_bad_model_override_says_correct_it_not_reinstall():
         reason = _public_unavailable_reason(text)
         assert "Correct or remove" in reason and "Reinstall" not in reason
     assert "Reinstall" in _public_unavailable_reason("CosyVoice GGUF model files: m.gguf is missing from /c")
+
+
+def test_failed_probe_verdict_expires_but_stays_cached_until_then(fake_cli, monkeypatch):
+    monkeypatch.setenv("FAKE_EXIT", "7")
+    with pytest.raises(RuntimeError, match="exit code 7"):
+        bootstrap.probe_backends()
+    monkeypatch.setenv("FAKE_EXIT", "0")
+    monkeypatch.setenv("FAKE_OUT", "CPU - i5\n")
+    with pytest.raises(RuntimeError, match="exit code 7"):  # still inside the TTL
+        bootstrap.probe_backends()
+    (key,) = bootstrap._PROBE_CACHE
+    message, _ = bootstrap._PROBE_CACHE[key]
+    bootstrap._PROBE_CACHE[key] = (message, 0.0)  # TTL elapsed
+    assert bootstrap.probe_backends()[0].name == "CPU"
+
+
+def test_expired_probe_verdict_survives_a_concurrent_expiry(fake_cli, monkeypatch):
+    """Two threads can read the same expired failure; the second removal must not raise."""
+    monkeypatch.setenv("FAKE_EXIT", "7")
+    with pytest.raises(RuntimeError, match="exit code 7"):
+        bootstrap.probe_backends()
+    (key,) = bootstrap._PROBE_CACHE
+    message, _ = bootstrap._PROBE_CACHE[key]
+
+    class RacedCache(dict):
+        def get(self, k, default=None):
+            value = super().get(k, default)
+            super().pop(k, None)  # the other thread expired it first
+            return value
+
+        def __getitem__(self, k):
+            value = super().__getitem__(k)
+            super().pop(k, None)
+            return value
+
+    monkeypatch.setattr(bootstrap, "_PROBE_CACHE", RacedCache({key: (message, 0.0)}))
+    monkeypatch.setenv("FAKE_EXIT", "0")
+    monkeypatch.setenv("FAKE_OUT", "CPU - i5\n")
+    assert bootstrap.probe_backends()[0].name == "CPU"
+
+
+def test_exit_reason_ignores_log_lines_from_an_earlier_launch(tmp_path, monkeypatch):
+    from engines.cosyvoice_gguf.process import NativeServer
+
+    monkeypatch.setattr(bootstrap, "managed_dir", lambda: tmp_path / "managed")
+    log = tmp_path / "server.log"
+    log.write_bytes(b"previous launch: vkCreateInstance failed\n")
+    server = NativeServer()
+    server.log_handle = log.open("ab")
+    server._log_start = server.log_handle.tell()
+    assert "vkCreateInstance" not in server._exit_reason()
+    server.log_handle.write(b"this launch: missing DLL\n")
+    reason = server._exit_reason()
+    assert "missing DLL" in reason and "vkCreateInstance" not in reason
+    server.log_handle.close()
