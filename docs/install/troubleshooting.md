@@ -123,7 +123,7 @@ The managed Python environment is damaged and automatic repair did not fix it. U
 
 The engine crashed below Python (`0xC0000005` or `SIGSEGV`). Update your GPU driver and try CPU mode. Send the in-app report if it persists. On Windows the report names the library that crashed (see [Native backend crashes in Electron](#native-backend-crashes-in-electron)); when it is the graphics driver, the screen says so.
 
-If the crash happened inside the model weight loader (`transformers/core_model_loading.py` in the crashed thread), later starts of the same version load weights one at a time (`HF_DEACTIVATE_ASYNC_LOAD=1`), which only makes loading slower. Set `HF_DEACTIVATE_ASYNC_LOAD=0` to opt out.
+A crash inside the model weight loader (`transformers/core_model_loading.py` in the crashed thread, seen on some Windows machines) is avoided on Windows by default: the backend loads weights one at a time (`HF_DEACTIVATE_ASYNC_LOAD=1`), which only makes loading slower. Set `HF_DEACTIVATE_ASYNC_LOAD=0` to opt back in to threaded loading. On macOS and Linux the same setting is applied automatically, for later starts of the same version, after such a crash.
 
 ### `NATIVE_ILLEGAL_INSTRUCTION`
 
@@ -1706,6 +1706,10 @@ reconnecting automatically; the workspace stays usable.
   blocked executable. Add VoiceStudio's runtime folder to your antivirus
   exclusions (Windows Security → Virus & threat protection → Manage settings →
   Exclusions) and make sure it is not inside OneDrive, then retry.
+- **`Could not start <program>: spawn ETIMEDOUT`** — the operating system gave
+  up starting the program; on macOS this happens when its security check of the
+  executable stalls. VoiceStudio retries twice on its own (after 2 s and 5 s).
+  If it still fails, restart the computer and open VoiceStudio again.
 - **`… spawn UNKNOWN. Windows Smart App Control blocked it.`** — Smart App
   Control (Windows 11) blocks programs without a known reputation, including the
   runtime's `python.exe`; Event Viewer → Applications and Services Logs →

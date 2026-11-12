@@ -252,7 +252,11 @@ class TTSBackend(ABC):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         # Enforce lifetime at the engine boundary so every caller is covered.
-        for name in ("generate", "generate_batch", "_ensure_loaded", "convert_voice"):
+        # ``selftest_generate`` (OmniVoice GGUF's bounded diagnostic) is a
+        # render too: an unload or idle sweep must not run under it.
+        for name in (
+            "generate", "generate_batch", "_ensure_loaded", "convert_voice", "selftest_generate",
+        ):
             method = cls.__dict__.get(name)
             if method is not None:
                 setattr(cls, name, _lease_render(method))
@@ -1855,7 +1859,10 @@ class OmniVoiceBackend(TTSBackend):
     supports_voice_design = True
     # The model draws from a per-request generator, so a seed reproduces a take.
     supports_generation_seed = True
-    gpu_compat = ("cuda", "rocm", "mps", "cpu")
+    # "xpu": the in-process loader and the sidecar both run on Intel Arc via
+    # get_best_device(); without it routing reported a CPU fallback (and gave
+    # CPU budgets) for a model that was actually on the GPU.
+    gpu_compat = ("cuda", "rocm", "xpu", "mps", "cpu")
     # Derived from the pool's own per-job budget (_GPU_VRAM_PER_JOB_GB = 5.0 in
     # model_manager, itself measured from the ~1.6 GB forward + autoregressive
     # decode and the co-loaded WhisperX on the clone path), plus room for the
@@ -3239,11 +3246,15 @@ class MLXAudioBackend(TTSBackend):
     def _ensure_loaded(self):
         if self._model is not None:
             return
-        from services.local_model_paths import get as local_model_path, validate
+        from services.local_model_paths import (
+            get as local_model_path, loading_fingerprint, note_loaded, validate,
+        )
+        local_fingerprint = None
         if (not os.environ.get("OMNIVOICE_MLX_AUDIO_MODEL", "").strip()
                 and self._model_id
                 and self._model_id == local_model_path("tts", "mlx-audio")):
             validate("tts", "mlx-audio", self._model_id)
+            local_fingerprint = loading_fingerprint(self._model_id)
         if self._curated_key() == "melotts":
             _ensure_melotts_text_frontend()
         elif self._curated_key() == "kokoro":
@@ -3275,6 +3286,8 @@ class MLXAudioBackend(TTSBackend):
             # this worker; the installed model ships the same voices/ folder.
             model.repo_id = self._model_id
         self._model = model
+        if local_fingerprint is not None:
+            note_loaded("tts", "mlx-audio", self._model_id, local_fingerprint)
 
     def _is_voice_design(self) -> bool:
         """Whether the loaded model builds a voice from a text description.

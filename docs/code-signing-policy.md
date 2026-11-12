@@ -9,7 +9,7 @@ this repository.
 > by [SignPath Foundation](https://signpath.org).
 
 Status: the application to SignPath Foundation is pending. Until a release says
-otherwise in its **Installer signing** table, Windows installers are unsigned
+otherwise in its **Download** table, Windows installers are unsigned
 and Windows SmartScreen shows a warning.
 
 ## Project
@@ -50,7 +50,7 @@ All members use multi-factor authentication on GitHub and on SignPath.
 | Role | Who | Responsibility |
 |---|---|---|
 | Authors / committers | [@debpalash](https://github.com/debpalash) and other maintainers with write access | Change the source. |
-| Reviewers | [@debpalash](https://github.com/debpalash) | Review every change from contributors without write access (pull requests; the merge queue and required checks apply). |
+| Reviewers | [@debpalash](https://github.com/debpalash) | Review every change from contributors without write access (pull requests; the required checks apply, and a pull request merges only once they pass). |
 | Approvers | [@debpalash](https://github.com/debpalash) | Approve each signing request in SignPath, after checking the request's origin (this repository, the release workflow, an exact version tag, and its commit) and the uploaded unsigned artifact `signpath-unsigned-win32-<arch>` of that workflow run. |
 
 <!-- OWNER: add further maintainers here when they get write access, and list
@@ -78,6 +78,10 @@ program makes, all started or consented to by the user, are listed in the
 - Product analytics, off unless the user says yes at the first-run prompt;
   allowlisted, content-free metadata only.
 - Account features, off by default and stopped at once when switched off.
+- The GitHub star badge, which fetches the public repository star count while
+  shown and refreshes it every 20 minutes while visible, with no credentials or
+  referrer. It sends no project, recording, or account data and keeps the last
+  count on failure (an owner-approved exception to the local-first rule).
 
 Apart from the update check above, the program does not transfer information to
 networked systems unless the user or the installer requests it. Third-party components keep their own
@@ -125,6 +129,10 @@ signs nothing and behaves as before (`allow_unsigned` rules unchanged).
      `SIGNPATH_SIGNING_POLICY_SLUG`.
    - Leave `ELECTRON_WINDOWS_CSC_LINK` unset: an own certificate takes
      precedence and disables the SignPath path.
+   - Optional: a second policy with the slug `test-signing` (test certificate)
+     lets a [release rehearsal](RELEASING.md#rehearse-a-release) dispatched with
+     `signpath_policy=test-signing` exercise this path from a branch. Rehearsals
+     never submit to the release policy.
 4. Test run: dispatch **Electron desktop release** with `release_tag` set to an
    existing tag, `publish=false`. Approve the signing request in SignPath. The
    Windows legs should pass "Sign the Windows installer with SignPath",
@@ -138,7 +146,7 @@ signs nothing and behaves as before (`allow_unsigned` rules unchanged).
    installer's SHA-512 and its size equals the file size; the `.blockmap` sits
    next to it. Installing it by hand is a useful extra check.
 6. Publish normally (for example the next beta). Check that the release notes'
-   Installer signing table shows Windows as signed, and that README and the
+   Download table shows Windows as signed, and that README and the
    download page link here (SignPath requires the words "Code signing policy"
    on both).
 7. After that first signed publish, run the real in-app update test: update an
