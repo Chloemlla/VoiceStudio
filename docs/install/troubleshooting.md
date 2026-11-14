@@ -83,6 +83,18 @@ The runtime folder is on a drive mounted with `noexec`. Choose a folder on anoth
 
 A runtime download received no data for a long time. Setup stops a download that gets no data for 2 minutes, and repeats the install up to twice by itself after a stall or a temporary server error (such as 504 Gateway Timeout) before it shows this. Retry keeps finished packages and resumes large multi-connection downloads, but other partial downloads start again. Try another network, turn off your VPN or choose another download region.
 
+Cancel and Restart on CPU interrupt the automatic retry countdown immediately;
+finished downloads remain cached. Runtime probes also drain verbose diagnostic
+output even when it is not being captured, so a full output pipe cannot block
+an otherwise successful check.
+
+Retry reuses completed, hash-verified prefetched wheels before budgeting space
+for new downloads. Already downloaded wheels are not counted a second time;
+new transfers still leave the required installation-space reserve available.
+Wheel-size probes also handle a connection reset or timeout after response
+headers arrive. Download consumers still receive stream errors, and an
+interrupted wheel is kept incomplete rather than published as a finished file.
+
 ### `RUNTIME_DOWNLOAD_INTERRUPTED`
 
 The connection dropped during a runtime download, as in `peer closed connection without sending TLS close_notify`. Retry keeps finished packages and resumes large multi-connection downloads, but other partial downloads start again. The same advice as `RUNTIME_DOWNLOAD_STALLED` applies if it repeats.
@@ -945,11 +957,25 @@ did was `generate:start (audio)`, a dub, or a dictation.
 Newer builds **bound** every GPU job — whole-file transcription, **chunked dub
 transcription**, **and** TTS generation: instead of hanging forever and starving
 the backend, a wedged job fails after a timeout with this exact guidance. Tune
-the bounds with `OMNIVOICE_ASR_TRANSCRIBE_TIMEOUT_S` (whole-file transcription)
-and `OMNIVOICE_GENERATE_TIMEOUT_S` (generation) — both in seconds, default 300
-— and `OMNIVOICE_TRANSCRIBE_CHUNK_TIMEOUT_S` (per-chunk dub transcription,
-default 120). **Raise** them for very long single files/generations, **lower**
-them to fail faster on a small machine.
+the bounds with `OMNIVOICE_ASR_TRANSCRIBE_TIMEOUT_S` (whole-file transcription
+floor, default 300 seconds), `OMNIVOICE_GENERATE_TIMEOUT_S` (generation, default
+300 seconds), and `OMNIVOICE_TRANSCRIBE_CHUNK_TIMEOUT_S` (per-chunk dubbing,
+default 120 seconds).
+
+Whole-file ASR allows the larger of its floor and twice the audio duration: a
+25-minute recording gets 50 minutes. This covers file uploads, OpenAI-compatible
+transcription, batch dubbing, legacy dubbing and streams whose speaker engine
+requires the whole recording. Set `OMNIVOICE_ASR_TIMEOUT_REALTIME_FACTOR` to
+change the multiplier, or `0` to keep only the fixed floor. Invalid, negative
+or non-finite settings fall back to defaults. Duration comes from a local-only
+ffprobe check bounded to 10 seconds; unavailable duration uses the floor.
+
+Queueing, model loading and child inference share one deadline. Sidecars,
+including the Windows ROCm proxy, and whisper.cpp use its remaining time rather
+than a separate five- or ten-minute ceiling. Calls directly to an isolated
+engine without a route guard retain `OMNIVOICE_ASR_RECV_TIMEOUT_S` as their
+floor (default 600 seconds). Progress does not extend the deadline; timed-out
+in-process inference remains accounted for until its native worker exits.
 
 Saving a cloned voice without a transcript transcribes the reference with an
 installed speech-to-text model for at most 60 seconds
@@ -1305,13 +1331,16 @@ Full guide: [dubbing/translation-engines.md](../dubbing/translation-engines.md#i
 
 ## First-run setup fails on a restricted network (GitHub/PyPI blocked)
 
-On networks that block or can't resolve **GitHub**, the first-run bootstrap may
-fail to download the managed Python (`uv venv ... failed`, often a DNS error).
-VoiceStudio now tries, in order: the default GitHub host → a gh-proxy mirror → your
-**system Python** (if 3.11+ is installed). If all three fail:
+On networks that block, throttle or can't resolve **GitHub**, first-run setup may
+stall or fail while downloading the managed Python (the setup screen shows
+`cpython-3.11.… (download)`). With the download region on **Auto-detect**,
+setup retries a failed or stalled Python download once from the other source
+(GitHub ↔ the `gh-proxy.com` mirror) and notes the switch in the setup log; a
+region you picked, or your own `UV_PYTHON_INSTALL_MIRROR`, is kept as is. If
+both fail:
 
-1. **Install Python 3.11+** from <https://www.python.org/downloads/> (on Windows,
-   tick *"Add Python to PATH"*), then relaunch — VoiceStudio will use it.
+1. **Choose the Russia or Restricted download region** under **Options** on the
+   setup screen and press Retry: both start from the mirror.
 2. **Point at a reachable mirror** for the Python download:
    - `UV_PYTHON_INSTALL_MIRROR=https://gh-proxy.com/https://github.com/astral-sh/python-build-standalone/releases/download`
 3. **In China, keep Auto-detect or pick the China download region** under
@@ -1409,7 +1438,14 @@ uses the mirror only when it answers and is clearly faster. Any doubt keeps
 `files.pythonhosted.org`; the setup log line `PyPI speed check: ...` shows the
 result. **Global** never runs the check; **China** always uses the mirror. If the
 mirror fails, setup retries once from `files.pythonhosted.org` and keeps every
-file that finished. The PyTorch wheels on `download-r2.pytorch.org` have no
+file that finished. In **Auto-detect**, a later DNS, connection or temporary server
+failure for a pinned PyPI file also tries the Aliyun mirror once. This covers
+small source archives as well as wheels; their locked hashes are unchanged.
+The fallback only applies when the failed URL identifies PyPI, and does not
+change an explicit **Global** choice or retry authentication/integrity errors
+through another host. If both hosts fail, fix the network/DNS problem and press
+**Retry**. Failure reports name the URL's failed host instead of a previously
+active large download. The PyTorch wheels on `download-r2.pytorch.org` have no
 mirror and download from there in every region. PyPI mirror variables
 (`UV_DEFAULT_INDEX`, `UV_INDEX_URL`) do not redirect the locked wheels
 ([#3444](https://github.com/debpalash/VoiceStudio/issues/3444)).
@@ -1843,3 +1879,9 @@ Self-update needs the `app-update.yml` file that release installers ship in the 
 ## Backend exits with an illegal instruction on an older CPU
 
 The effects library `pedalboard` can crash on CPUs without AVX2. VoiceStudio now loads it once in a separate process first; if that fails, effects stages that depend on it (filters, compressor, reverb, gate, EQ) are skipped and the audio is left unmodified, while the leveler and limiter keep working.
+
+## Browser crashes with "Cannot read properties of undefined (reading 'filter')"
+
+If the stack names `useModelInstallCompletionRefresh`, the model-install status response is incomplete. VoiceStudio now rejects malformed status responses while keeping the last valid download state, so the listener and other model-install screens remain mounted. A failed response does not mark a download complete.
+
+For a custom browser deployment, check that its API points to the VoiceStudio Python backend from the same release. `/models/install/status` returns an object with a `jobs` array; a placeholder API or mismatched backend can return a different body. Include the endpoint's response shape (without private data) when reporting a persistent mismatch.

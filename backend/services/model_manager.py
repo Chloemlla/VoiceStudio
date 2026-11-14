@@ -2710,6 +2710,15 @@ def _load_model_sync():
         from omnivoice.utils.dtype import tts_dtype_name
 
         checkpoint = resolve_omnivoice_checkpoint()
+        # Recovery must identify resident bytes, not weights replaced on disk
+        # after loading. Keep this snapshot on the model that actually loaded.
+        resume_fingerprint = None
+        try:
+            from core.model_fingerprint import tree_fingerprint
+            if os.path.isabs(checkpoint) or os.path.isdir(checkpoint):
+                resume_fingerprint = tree_fingerprint(os.path.realpath(checkpoint))
+        except Exception as err:  # noqa: BLE001 - optional recovery proof
+            logger.debug("Recovery fingerprint unavailable: %s", type(err).__name__)
         local_fingerprint = None
         if not os.environ.get("OMNIVOICE_MODEL", "").strip():
             from services.local_model_paths import get, loading_fingerprint, validate
@@ -3016,6 +3025,12 @@ def _load_model_sync():
         # caller timed out. Instance metadata keeps /model/status honest.
         try:
             setattr(_model, "_voicestudio_checkpoint", checkpoint)
+            if resume_fingerprint is not None:
+                # Native loading can read many files. A tree that changed
+                # during that interval cannot certify the resident bytes.
+                if tree_fingerprint(os.path.realpath(checkpoint)) != resume_fingerprint:
+                    resume_fingerprint = None
+            setattr(_model, "_voicestudio_weights_fingerprint", resume_fingerprint)
             setattr(
                 _model,
                 "_voicestudio_loaded_at",
@@ -3429,8 +3444,16 @@ def _release_idle_tts_memory(stage):
             release_transcription_backend(0.0)
         except Exception:  # noqa: BLE001 -- best-effort, never blocks the caller
             logger.debug("capture-ASR pre-%s release failed", stage, exc_info=True)
-        release_tts_side_caches()
-        free_vram()
+        release_tts_side_caches(keep_passage_choices=stage == "generate")
+        if stage == "generate":
+            # Warm generates can overlap inference on other GPU-pool workers,
+            # so skip free_vram()'s cuBLAS workspace clear: it belongs on
+            # unload paths only and is not thread-safe on older torch builds.
+            import gc
+            gc.collect()
+            release_device_cache()
+        else:
+            free_vram()
     except Exception:  # noqa: BLE001 -- a cleanup failure must never break the caller
         logger.debug("pre-%s memory reclaim skipped", stage, exc_info=True)
 
@@ -3440,7 +3463,11 @@ def _should_make_room_for_generate():
 
     Modes (OMNIVOICE_FREE_VRAM_BEFORE_GENERATE):
       auto (default): free when free system RAM is below the unified headroom,
-        mirroring _make_room_before_tts_load. A roomy machine pays nothing.
+        mirroring _make_room_before_tts_load, or when a CUDA/ROCm GPU's free
+        VRAM is below the figure that logs "Low GPU memory". On a small
+        dedicated card a nearly full VRAM makes the driver spill the generate
+        into shared system memory, which runs several times slower even with
+        plenty of RAM. A roomy machine pays nothing.
       always: free before every generate (small per-call cost from gc.collect +
         cache drop).
       never: opt out.
@@ -3451,9 +3478,13 @@ def _should_make_room_for_generate():
     if mode == "always":
         return True
     try:
-        from services.memory_budget import available_memory
-        free_gb = (available_memory() or {}).get("ram_available_gb")
+        from services.memory_budget import _LOW_RAM_HEADROOM_GB, available_memory
+        mem = available_memory() or {}
+        free_gb = mem.get("ram_available_gb")
         if free_gb is not None and free_gb < _UNIFIED_OFFLOAD_HEADROOM_GB:
+            return True
+        vram_free_gb = mem.get("vram_free_gb")
+        if vram_free_gb is not None and vram_free_gb < _LOW_RAM_HEADROOM_GB:
             return True
     except Exception:  # noqa: BLE001 -- a probe failure must never block a generate
         logger.debug("make_room memory probe failed", exc_info=True)
@@ -3786,7 +3817,7 @@ async def idle_worker():
                 await run_release(_release_idle_model)
         await run_release(_release_idle_side_models, idle_timeout)
 
-def release_tts_side_caches():
+def release_tts_side_caches(*, keep_passage_choices=False):
     """Drop caches keyed to the TTS model, for when the model itself is released.
 
     The voice-clone prompt cache (services.tts_backend) holds encoded reference
@@ -3813,7 +3844,7 @@ def release_tts_side_caches():
     if mod is None:
         return
     try:
-        mod.clear_clone_prompt_cache()
+        mod.clear_clone_prompt_cache(keep_passage_choices=keep_passage_choices)
     except Exception:  # noqa: BLE001
         logger.debug("clone-prompt cache clear failed during unload", exc_info=True)
 

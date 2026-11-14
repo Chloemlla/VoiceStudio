@@ -34,6 +34,7 @@ from typing import Literal, Optional
 
 import torch
 
+from services.instruct_safety import tag_safe_instruct
 from services.expression import COSYVOICE_INLINE_TAGS, OMNIVOICE_INLINE_TAGS, expression_caps
 
 logger = logging.getLogger("omnivoice.tts")
@@ -1782,6 +1783,11 @@ def generate_with_cached_ref(model, *, ref_audio, ref_text, **gen_kw):
     # TypeError on an unknown kwarg.
     from services.model_manager import tts_inference
 
+    # Every native OmniVoice caller (audiobook, /generate, stream) converges
+    # here, so free-text directions degrade instead of raising (#4054).
+    if gen_kw.get("instruct"):
+        gen_kw["instruct"] = tag_safe_instruct(gen_kw["instruct"])
+
     # tts_inference: no device move of the shared model while this runs, and
     # it is restored first if an offload left it in RAM (#2618).
     with engine_in_use(OmniVoiceBackend(model=model)), tts_inference():
@@ -1828,12 +1834,23 @@ def generate_with_cached_ref(model, *, ref_audio, ref_text, **gen_kw):
                     logger.debug("failed to remove reference window")
 
 
-def clear_clone_prompt_cache() -> None:
+def clear_clone_prompt_cache(*, keep_passage_choices: bool = False) -> None:
     """Drop all cached voice-clone prompts (frees their tensors). Called on model
-    unload so a flush/engine-switch doesn't strand VRAM."""
+    unload so a flush/engine-switch doesn't strand VRAM.
+
+    ``keep_passage_choices`` keeps the remembered reference windows: they hold
+    only an index and transcript, no tensors, so a pre-generate cleanup keeps
+    them rather than rerunning reference ASR on the next request. Failed
+    rankings (``_NO_PASSAGE``) are still dropped, so a recognizer that has
+    recovered gets another try."""
     with _prompt_cache_lock:
         _prompt_cache.clear()
-        _passage_choices.clear()
+        if not keep_passage_choices:
+            _passage_choices.clear()
+        else:
+            for key, (index, _text) in list(_passage_choices.items()):
+                if index == _NO_PASSAGE:
+                    del _passage_choices[key]
         _unresolved_prompt_recognizers.clear()
 
 
@@ -1958,7 +1975,7 @@ class OmniVoiceBackend(TTSBackend):
         gen_kw = dict(
             text=text,
             language=language if language and language != "Auto" else None,
-            instruct=kw.get("instruct"),
+            instruct=tag_safe_instruct(kw.get("instruct")),
             duration=kw.get("duration"),
             num_step=kw.get("num_step", 16),
             guidance_scale=kw.get("guidance_scale", 2.0),
@@ -2042,7 +2059,7 @@ class OmniVoiceBackend(TTSBackend):
 
         gen_kw = dict(
             language=kw.get("language"),
-            instruct=kw.get("instruct"),
+            instruct=tag_safe_instruct(kw.get("instruct")),
             duration=kw.get("duration"),
             speed=kw.get("speed", 1.0),
             denoise=kw.get("denoise", True),
@@ -3620,8 +3637,22 @@ class CosyVoiceBackend(TTSBackend):
             raise RuntimeError(f"CosyVoice unavailable: {msg}")
         from cosyvoice.cli.cosyvoice import AutoModel  # type: ignore[import-not-found]
         model_dir = self._resolved_model_dir()
+        checkpoint = os.path.realpath(model_dir)
+        fingerprint = None
+        try:
+            from core.model_fingerprint import tree_fingerprint
+            fingerprint = tree_fingerprint(checkpoint)
+        except Exception as err:  # noqa: BLE001 - optional recovery proof
+            logger.debug("CosyVoice recovery fingerprint unavailable: %s", type(err).__name__)
         logger.info("Loading CosyVoice from %s", model_dir)
         self._model = AutoModel(model_dir=model_dir)
+        try:
+            self._model._voicestudio_checkpoint = checkpoint
+            if fingerprint is not None and tree_fingerprint(checkpoint) != fingerprint:
+                fingerprint = None
+            self._model._voicestudio_weights_fingerprint = fingerprint
+        except Exception:  # noqa: BLE001 - optional recovery metadata
+            logger.debug("Could not attach CosyVoice recovery identity", exc_info=True)
 
     def generate(self, text: str, **kw) -> torch.Tensor:
         language = self._check_language(kw.get("language"))

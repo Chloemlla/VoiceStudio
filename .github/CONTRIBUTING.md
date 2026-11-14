@@ -424,6 +424,12 @@ The first run downloads container images and dependencies (as CI does); after
 that your code and results stay on your machine. CI is unchanged: `ci.yml`
 stays the gate.
 
+The module has its own dependency lockfile, `.dagger/uv.lock`; the root Python
+lockfile does not update it. When refreshing module dependencies, use the SDK
+matching `dagger.json`'s engine version and keep the generated `.dagger/sdk/`
+directory untracked. `tests/test_dependency_security_floors.py` checks both
+lockfiles against reviewed security fixes.
+
 ```bash
 dagger call check             # all of the above, in parallel
 dagger call check --git=.git  # also run tests that read real git history
@@ -558,10 +564,9 @@ test-only PR. Docker Hub overview edits still publish through the small
   Platform-only features go behind an explicit opt-in (Settings toggle, env
   var, or CLI flag).
 - **i18n — every locale (hard rule):** every user-facing string goes through
-  `t('...')` and the key must exist in **every** file of the catalog the code
-  uses: `electron/src/shared/i18n/locales/` (checked by
-  `tests/test_locale_parity.py`) or `electron/src/renderer/src/i18n/locales/`
-  (checked by `bun run --cwd electron locale:check`, which also fails on an
+  `t('...')` and the key must exist in **every** file of the catalog:
+  `electron/src/renderer/src/i18n/locales/` (checked by
+  `tests/test_locale_parity.py` and `bun run --cwd electron locale:check`, which also fails on an
   `en.json` key no code references; delete it from every locale, or add a
   prefix to `ALLOWED_PREFIXES` in `electron/tests/locale-source-keys.mjs` if code
   builds it dynamically). Translate; don't copy
@@ -581,7 +586,8 @@ test-only PR. Docker Hub overview edits still publish through the small
     restricted networks, skipped when the user set an endpoint
     (`backend/services/endpoint_race.py`); the dependency install's download
     of the packages pinned in `uv.lock`, from their locked URLs or the
-    regional mirror the user chose or the Auto region selected, including the
+    regional mirror the user chose or the Auto region selected (including a
+    hash-preserving PyPI failover after a confirmed transient origin failure), including the
     parallel multi-connection wheel prefetch
     (`electron/src/main/wheel-prefetch.ts`; owner-approved 2026-10-27); the
     Auto region's speed check, which reads the start of one locked wheel from
