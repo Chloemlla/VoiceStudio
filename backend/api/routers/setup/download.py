@@ -17,16 +17,18 @@ import sys
 import threading
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from api.dependencies import require_admin, require_consumer
 from core import prefs
 from core.failure import is_disk_full_error, is_hf_connectivity_error
 from core.path_security import UnsafePath, contained_child, safe_relative_path
 from services.hf_auth import token_for_endpoint
 from services.hf_revisions import revision_for
 from services.segmented_download import DownloadIntegrityError
+from core.url_safety import UnsafeURLError
 from utils import hf_progress
 from utils import download_aggregator
 # Weight floors and package files live in ``services/model_catalogue.py`` (via
@@ -184,8 +186,8 @@ def _segmented_enabled() -> bool:
     """IDM-style multi-connection accelerator (FDL-09), default **ON**. The app
     forces the legacy-LFS path (HF_HUB_DISABLE_XET=1) for clear progress, but that
     path is single-stream and slow — this restores parallel byte-range speed AND
-    real live progress, and falls back to snapshot_download on any error so it
-    can never compromise a correct install. Default-on so first-run downloads are
+    real live progress. Unsupported transfers can fall back to snapshot_download;
+    integrity and destination-policy refusals stop the install. Default-on so first-run downloads are
     fast out of the box (pairs with an HF token for higher rate limits); set
     OMNIVOICE_SEGMENTED_DOWNLOAD=0 to force the single-stream path."""
     return _truthy(prefs.resolve(
@@ -549,7 +551,7 @@ def _is_retryable_download_error(exc: BaseException) -> bool:
     # huggingface_hub is heavy and this module is on the setup import path.
     from huggingface_hub.utils import HfHubHTTPError, LocalEntryNotFoundError
 
-    if isinstance(exc, (_InstallCancelled, DownloadIntegrityError)):
+    if isinstance(exc, (_InstallCancelled, DownloadIntegrityError, UnsafeURLError)):
         return False
     if is_disk_full_error(exc):
         # A full volume does not heal between backoff sleeps; five retries only
@@ -592,7 +594,7 @@ def _segmented_retry_log_phrase(disable: bool, retry: bool) -> str:
     return "accelerator disabled; falling back to the plain downloader now"
 
 
-@router.post("/models/install")
+@router.post("/models/install", dependencies=[Depends(require_consumer)])
 async def install_model(req: InstallModelRequest):
     """Download one HF repo snapshot; progress goes through the shared
     ``/setup/download-stream`` SSE feed."""
@@ -852,7 +854,7 @@ async def install_model(req: InstallModelRequest):
                                 endpoint=_endpoint,
                                 revision=dl_kwargs["revision"],
                             )
-                        except (_InstallCancelled, DownloadIntegrityError):
+                        except (_InstallCancelled, DownloadIntegrityError, UnsafeURLError):
                             raise
                         except Exception as _seg_err:
                             if req.repo_id in _cancelled:
@@ -1138,7 +1140,7 @@ async def cancel_install_and_wait(repo_id: str) -> None:
                 _cancelled.discard(repo_id)
 
 
-@router.post("/models/install/cancel")
+@router.post("/models/install/cancel", dependencies=[Depends(require_consumer)])
 async def cancel_install(req: InstallModelRequest):
     """Request cancellation of an in-flight install (FDL-11).
 
@@ -1161,7 +1163,7 @@ async def cancel_install(req: InstallModelRequest):
 
 # ── Delete ─────────────────────────────────────────────────────────────────
 
-@router.delete("/models/{repo_id:path}")
+@router.delete("/models/{repo_id:path}", dependencies=[Depends(require_admin)])
 def delete_model(repo_id: str):
     """Remove an installed model from the HF cache.
 

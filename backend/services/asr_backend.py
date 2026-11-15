@@ -27,6 +27,7 @@ import asyncio
 import inspect
 import ipaddress
 import logging
+import math
 import os
 import re
 import contextlib
@@ -508,6 +509,36 @@ def whisper_checkpoint_translates(model_name: str | None) -> bool:
     return not ("turbo" in name or name.endswith(".en") or "distil" in name)
 
 
+def has_recognition_timestamps(result: dict, *, segments=None) -> bool:
+    """Whether every spoken cue has ASR timing, rather than a guessed clip span.
+
+    Text-only adapters must opt out even when they retain rough numeric bounds
+    for dubbing compatibility. Validate both raw and rendered segments so a
+    missing bound or rounding cannot manufacture a usable subtitle interval.
+    """
+    if "timestamps_available" in result and result["timestamps_available"] is not True:
+        return False
+
+    def valid(items):
+        if not isinstance(items, (list, tuple)):
+            return False
+        spoken = False
+        for segment in items:
+            if not isinstance(segment, dict) or not isinstance(segment.get("text"), str):
+                return False
+            if not segment["text"].strip():
+                continue
+            start, end = segment.get("start"), segment.get("end")
+            if not all(type(value) in (int, float) and math.isfinite(value) for value in (start, end)):
+                return False
+            if start < 0 or end <= start:
+                return False
+            spoken = True
+        return spoken
+
+    return valid(result.get("segments")) and (segments is None or valid(segments))
+
+
 class ASRBackend(ABC):
     id: str = "base"
     display_name: str = "Base ASR"
@@ -521,6 +552,8 @@ class ASRBackend(ABC):
     # conservative default is CPU-only; installed native runtimes may narrow
     # or extend their metadata through runtime_gpu_compat().
     gpu_compat: tuple[str, ...] = ("cpu",)
+    # Explicit loader policy, not inferred from imports or accelerator support.
+    gpu_self_test_policy = "independent"
 
     @classmethod
     def runtime_gpu_compat(cls):
@@ -759,6 +792,7 @@ class WhisperXBackend(ASRBackend):
     # Windows HIP heavy pipelines remain gated pending MIOpen validation.
     # CPU execution remains available independently of basic HIP CT2 support.
     gpu_compat = ("cuda", "cpu")
+    gpu_self_test_policy = "fallback"  # _pick_device always honors failure_warning()
 
     def __init__(self):
         self._model_name = os.environ.get("ASR_MODEL_WHISPERX", "large-v3")
@@ -888,6 +922,12 @@ class WhisperXBackend(ASRBackend):
             raise PipelineCompatibilityError(reason)
         if self._asr is not None:
             return
+        # Construction can precede completion of the background GPU test.
+        # Recheck at the actual load boundary; alignment uses this same device.
+        from core.gpu_self_test import failure_warning
+
+        if self._device == "cuda" and failure_warning():
+            self._device, self._compute_type = "cpu", "int8"
         # Patch speechbrain's lazy-import guard BEFORE whisperx pulls in pyannote
         # → speechbrain, or a stray k2_fsa redirect import aborts ASR on Windows
         # (#630/#611/#647). No-op on macOS/Linux and when speechbrain is absent.
@@ -1588,6 +1628,7 @@ class MLXWhisperBackend(ASRBackend):
 
 
 class PyTorchWhisperBackend(ASRBackend):
+    gpu_self_test_policy = "forceable"  # _pick_device uses get_best_device()
     id = "pytorch-whisper"
     display_name = "PyTorch Whisper (CUDA / CPU via transformers pipeline)"
     # Pure transformers pipeline → runs wherever torch does. A ROCm (HIP)
@@ -2228,6 +2269,7 @@ class MoonshineASRBackend(ASRBackend):
             "chunks": chunks,
             "segments": segments_out,
             "language": "en",
+            "timestamps_available": False,
         }
 
     def unload(self) -> None:
@@ -2389,7 +2431,8 @@ def _sherpa_result(text: str, samples, sr) -> dict:
     if text:
         segments.append({"text": text, "start": 0.0, "end": duration, "words": []})
     chunks = [{"text": s["text"], "timestamp": (s["start"], s["end"])} for s in segments]
-    return {"chunks": chunks, "segments": segments, "language": "auto", "text": text}
+    return {"chunks": chunks, "segments": segments, "language": "auto", "text": text,
+            "timestamps_available": False}
 
 
 # ── Registry ────────────────────────────────────────────────────────────────

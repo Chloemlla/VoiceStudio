@@ -528,7 +528,10 @@
     "speakers_unavailable": "A identificação de falantes não está disponível. A transcrição foi salva sem rótulos de falantes.",
     "missing_model": "Nenhum modelo de fala para texto está instalado — este recurso precisa de um para transcrever áudio.",
     "original_transcript": "Transcrição original",
-    "active_model": "Modelo: {{model}}"
+    "active_model": "Modelo: {{model}}",
+    "export_plain": "Salvar texto simples",
+    "export_srt": "Salvar SRT",
+    "timestamps_unavailable": "Esta transcrição não tem tempos de legendas. Use um modelo de reconhecimento de fala que forneça marcações de tempo."
   },
   "engineRuntime": {
     "ready": "Pronto",
@@ -971,7 +974,6 @@
     "play": "Reproduzir",
     "pause": "Pausar",
     "seek": "Posição de reprodução",
-    "missing": "O arquivo de áudio está ausente.",
     "now_playing": "Tocando agora",
     "kind_convert": "Conversão de voz"
   },
@@ -1731,6 +1733,8 @@
     "lineVoice": "Voz da linha",
     "chapterHeading": "Título do capítulo",
     "lineActions": "Ações da linha",
+    "mergeNext": "Mesclar com o próximo",
+    "mergeNextHint": "Una linhas adjacentes com o mesmo falante, a mesma substituição de voz e a mesma configuração de velocidade.",
     "autocastDone_one": "{{lines}} linhas distribuídas para {{count}} voz",
     "autocastDone_other": "{{lines}} linhas distribuídas entre {{count}} vozes",
     "recovery_title": "História interrompida",
@@ -2679,9 +2683,6 @@
     "failed": "Falha na atualização",
     "retry": "Tentar novamente",
     "dismiss": "Dispensar",
-    "toast_available": "VoiceStudio {{version}} está disponível",
-    "toast_install": "Instalar e reiniciar",
-    "toast_whats_new": "Novidades",
     "toast_later": "Mais tarde",
     "channel": "Canal de atualização",
     "channel_stable": "Estável",

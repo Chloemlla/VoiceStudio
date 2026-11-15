@@ -526,7 +526,10 @@
     "speakers_unavailable": "Talaridentifiering är inte tillgänglig. Transkriptionen sparades utan talaretiketter.",
     "missing_model": "Ingen tal-till-text-modell är installerad — den här funktionen behöver en för att transkribera ljud.",
     "original_transcript": "Ursprunglig transkription",
-    "active_model": "Modell: {{model}}"
+    "active_model": "Modell: {{model}}",
+    "export_plain": "Spara ren text",
+    "export_srt": "Spara SRT",
+    "timestamps_unavailable": "Den här transkriptionen saknar tidsangivelser för undertexter. Använd en taligenkänningsmodell som ger tidsstämplar."
   },
   "engineRuntime": {
     "ready": "Klar",
@@ -969,7 +972,6 @@
     "play": "Spela upp",
     "pause": "Pausa",
     "seek": "Uppspelningsposition",
-    "missing": "Ljudfilen saknas.",
     "now_playing": "Spelas nu",
     "kind_convert": "Röstkonvertering"
   },
@@ -1729,6 +1731,8 @@
     "lineVoice": "Radens röst",
     "chapterHeading": "Kapiteltitel",
     "lineActions": "Radåtgärder",
+    "mergeNext": "Slå samman med nästa",
+    "mergeNextHint": "Slå ihop intilliggande rader med samma talare, åsidosättning av röst och hastighetsinställning.",
     "autocastDone_one": "{{lines}} rader tilldelade {{count}} röst",
     "autocastDone_other": "{{lines}} rader fördelade på {{count}} röster",
     "recovery_title": "Avbruten berättelse",
@@ -2677,9 +2681,6 @@
     "failed": "Uppdateringen misslyckades",
     "retry": "Försök igen",
     "dismiss": "Avvisa",
-    "toast_available": "VoiceStudio {{version}} är tillgänglig",
-    "toast_install": "Installera och starta om",
-    "toast_whats_new": "Nyheter",
     "toast_later": "Senare",
     "channel": "Uppdateringskanal",
     "channel_stable": "Stabil",
