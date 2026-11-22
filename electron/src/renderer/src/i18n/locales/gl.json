@@ -2338,6 +2338,10 @@
     "dubbing_cta": "Executa isto no teu propio vídeo →",
     "dubbing_loading": "Cargando demostración de dobraxe…",
     "dubbing_dismiss": "Rexeitar a demostración de dobraxe",
+    "dubbing_download": "Descargar vídeos de demostración (~10 MB)",
+    "dubbing_downloading": "Descargando…",
+    "dubbing_download_failed": "A descarga fallou. Comproba a túa conexión.",
+    "dubbing_retry": "Reintentar",
     "original_tag": "orixinal",
     "dubbed_tag": "dobrado",
     "script_conversational": "Conversacional",
@@ -3355,7 +3359,8 @@
     "denoise": "Ruído de referencia limpo",
     "polish": "Audio xerado polaco",
     "basics": "1× é a velocidade normal. Deixa a duración en branco para o tempo natural.",
-    "hint": "Normalmente deixa estes predeterminado. A orientación axusta a influencia inmediata; os outros controis cambian como o modelo constrúe o son. Cambia un a un."
+    "hint": "Normalmente deixa estes predeterminado. A orientación axusta a influencia inmediata; os outros controis cambian como o modelo constrúe o son. Cambia un a un.",
+    "pauses_hint": "Engade silencio nas liñas en branco. 0 mantén o ritmo propio do motor."
   },
   "languagePicker": {
     "dialectFollowsVoice": "{{model}} ten un modelo {{language}}, polo que o acento segue a voz de referencia.",

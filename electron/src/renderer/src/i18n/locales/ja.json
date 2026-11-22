@@ -2251,6 +2251,10 @@
     "dubbing_cta": "これを自分のビデオで実行します→",
     "dubbing_loading": "ダビングデモを読み込み中…",
     "dubbing_dismiss": "ダビングデモを閉じる",
+    "dubbing_download": "デモ動画をダウンロード（約10 MB）",
+    "dubbing_downloading": "ダウンロード中…",
+    "dubbing_download_failed": "ダウンロードに失敗しました。接続を確認してください。",
+    "dubbing_retry": "再試行",
     "original_tag": "オリジナル",
     "dubbed_tag": "吹き替えられた",
     "script_conversational": "会話型",
@@ -3355,7 +3359,8 @@
     "denoise": "参照音声のノイズ除去",
     "polish": "生成音声の仕上げ",
     "basics": "1×が通常速度です。自然な長さにするには時間を空欄にします。",
-    "hint": "通常は既定値のままで構いません。ガイダンスはプロンプトの影響を、その他の設定はモデルの音の組み立て方を調整します。一度に一つずつ変更してください。"
+    "hint": "通常は既定値のままで構いません。ガイダンスはプロンプトの影響を、その他の設定はモデルの音の組み立て方を調整します。一度に一つずつ変更してください。",
+    "pauses_hint": "空行に無音を入れます。0 ではエンジン本来の間合いのままです。"
   },
   "languagePicker": {
     "dialectFollowsVoice": "{{model}} の{{language}}モデルは1つだけのため、アクセントは参照音声に従います。",

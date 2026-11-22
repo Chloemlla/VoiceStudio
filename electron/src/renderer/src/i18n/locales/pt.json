@@ -2253,6 +2253,10 @@
     "dubbing_cta": "Execute isso em seu próprio vídeo →",
     "dubbing_loading": "Carregando demonstração de dublagem…",
     "dubbing_dismiss": "Ignorar demonstração de dublagem",
+    "dubbing_download": "Baixar vídeos de demonstração (~10 MB)",
+    "dubbing_downloading": "Baixando…",
+    "dubbing_download_failed": "O download falhou. Verifique sua conexão.",
+    "dubbing_retry": "Tentar novamente",
     "original_tag": "originais",
     "dubbed_tag": "dublado",
     "script_conversational": "Conversacional",
@@ -3357,7 +3361,8 @@
     "denoise": "Limpar ruído da referência",
     "polish": "Aprimorar o áudio gerado",
     "basics": "1× é a velocidade normal. Deixe a duração vazia para um ritmo natural.",
-    "hint": "Em geral, mantenha os valores padrão. A orientação ajusta a influência da instrução; os outros controles mudam como o modelo constrói o som. Altere um de cada vez."
+    "hint": "Em geral, mantenha os valores padrão. A orientação ajusta a influência da instrução; os outros controles mudam como o modelo constrói o som. Altere um de cada vez.",
+    "pauses_hint": "Adiciona silêncio nas linhas em branco. 0 mantém o ritmo próprio do motor."
   },
   "languagePicker": {
     "dialectFollowsVoice": "{{model}} tem um único modelo de {{language}}, por isso o sotaque segue a voz de referência.",

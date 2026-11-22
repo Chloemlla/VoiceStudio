@@ -2251,6 +2251,10 @@
     "dubbing_cta": "Chạy cái này trên video của riêng bạn →",
     "dubbing_loading": "Đang tải bản demo lồng tiếng…",
     "dubbing_dismiss": "Loại bỏ bản demo lồng tiếng",
+    "dubbing_download": "Tải video demo (~10 MB)",
+    "dubbing_downloading": "Đang tải xuống…",
+    "dubbing_download_failed": "Tải xuống thất bại. Hãy kiểm tra kết nối.",
+    "dubbing_retry": "Thử lại",
     "original_tag": "nguyên bản",
     "dubbed_tag": "được mệnh danh là",
     "script_conversational": "đàm thoại",
@@ -3355,7 +3359,8 @@
     "denoise": "Lọc nhiễu bản tham chiếu",
     "polish": "Trau chuốt âm thanh đã tạo",
     "basics": "1× là tốc độ bình thường. Để trống thời lượng để có nhịp tự nhiên.",
-    "hint": "Thường nên giữ giá trị mặc định. Độ dẫn hướng điều chỉnh ảnh hưởng của lời nhắc; các nút khác thay đổi cách mô hình tạo âm thanh. Mỗi lần chỉ đổi một mục."
+    "hint": "Thường nên giữ giá trị mặc định. Độ dẫn hướng điều chỉnh ảnh hưởng của lời nhắc; các nút khác thay đổi cách mô hình tạo âm thanh. Mỗi lần chỉ đổi một mục.",
+    "pauses_hint": "Thêm khoảng lặng ở dòng trống. 0 giữ nhịp riêng của công cụ."
   },
   "languagePicker": {
     "dialectFollowsVoice": "{{model}} chỉ có một mô hình {{language}}, nên giọng vùng miền theo giọng tham chiếu.",

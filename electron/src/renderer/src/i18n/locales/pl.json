@@ -2275,6 +2275,10 @@
     "dubbing_cta": "Uruchom to na swoim własnym filmie →",
     "dubbing_loading": "Ładowanie wersji demonstracyjnej kopiowania…",
     "dubbing_dismiss": "Zamknij demonstrację dubbingu",
+    "dubbing_download": "Pobierz filmy demonstracyjne (~10 MB)",
+    "dubbing_downloading": "Pobieranie…",
+    "dubbing_download_failed": "Pobieranie nie powiodło się. Sprawdź połączenie.",
+    "dubbing_retry": "Spróbuj ponownie",
     "original_tag": "oryginał",
     "dubbed_tag": "dubbingowany",
     "script_conversational": "Konwersacyjny",
@@ -3381,7 +3385,8 @@
     "denoise": "Usuń szum z nagrania wzorcowego",
     "polish": "Dopracuj wygenerowany dźwięk",
     "basics": "1× to normalna prędkość. Pozostaw czas pusty, aby zachować naturalne tempo.",
-    "hint": "Zwykle najlepiej pozostawić wartości domyślne. Sterowanie określa wpływ polecenia; pozostałe ustawienia zmieniają sposób budowania dźwięku. Zmieniaj jedno naraz."
+    "hint": "Zwykle najlepiej pozostawić wartości domyślne. Sterowanie określa wpływ polecenia; pozostałe ustawienia zmieniają sposób budowania dźwięku. Zmieniaj jedno naraz.",
+    "pauses_hint": "Dodaje ciszę przy pustych wierszach. 0 zachowuje własne tempo silnika."
   },
   "languagePicker": {
     "dialectFollowsVoice": "{{model}} ma jeden model dla języka: {{language}}, więc akcent podąża za głosem referencyjnym.",

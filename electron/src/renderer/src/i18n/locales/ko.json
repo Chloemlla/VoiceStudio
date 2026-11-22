@@ -2250,6 +2250,10 @@
     "dubbing_cta": "자신의 비디오에서 이것을 실행 →",
     "dubbing_loading": "더빙 데모 로드 중…",
     "dubbing_dismiss": "더빙 데모 닫기",
+    "dubbing_download": "데모 영상 다운로드 (~10 MB)",
+    "dubbing_downloading": "다운로드 중…",
+    "dubbing_download_failed": "다운로드에 실패했습니다. 연결을 확인하세요.",
+    "dubbing_retry": "다시 시도",
     "original_tag": "원본",
     "dubbed_tag": "더빙된",
     "script_conversational": "대화",
@@ -3355,7 +3359,8 @@
     "denoise": "참조 음성 잡음 제거",
     "polish": "생성된 오디오 다듬기",
     "basics": "1×는 일반 속도입니다. 자연스러운 길이를 원하면 시간을 비워 두세요.",
-    "hint": "보통 기본값을 유지하세요. 가이던스는 프롬프트의 영향을 조정하고, 다른 설정은 모델이 소리를 구성하는 방식을 바꿉니다. 한 번에 하나씩 변경하세요."
+    "hint": "보통 기본값을 유지하세요. 가이던스는 프롬프트의 영향을 조정하고, 다른 설정은 모델이 소리를 구성하는 방식을 바꿉니다. 한 번에 하나씩 변경하세요.",
+    "pauses_hint": "빈 줄에 무음을 넣습니다. 0이면 엔진 고유의 속도를 유지합니다."
   },
   "languagePicker": {
     "dialectFollowsVoice": "{{model}}에는 {{language}} 모델이 하나뿐이라 억양은 참조 음성을 따릅니다.",

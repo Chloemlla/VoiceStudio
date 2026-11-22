@@ -2251,6 +2251,10 @@
     "dubbing_cta": "Jalankan ini di video Anda sendiri →",
     "dubbing_loading": "Memuat demo sulih suara…",
     "dubbing_dismiss": "Tolak demo sulih suara",
+    "dubbing_download": "Unduh video demo (~10 MB)",
+    "dubbing_downloading": "Mengunduh…",
+    "dubbing_download_failed": "Unduhan gagal. Periksa koneksi Anda.",
+    "dubbing_retry": "Coba lagi",
     "original_tag": "asli",
     "dubbed_tag": "dijuluki",
     "script_conversational": "Percakapan",
@@ -3355,7 +3359,8 @@
     "denoise": "Bersihkan derau referensi",
     "polish": "Sempurnakan audio yang dihasilkan",
     "basics": "1× adalah kecepatan normal. Kosongkan durasi untuk irama alami.",
-    "hint": "Biasanya biarkan nilai bawaan. Panduan mengatur pengaruh instruksi; kontrol lain mengubah cara model membentuk suara. Ubah satu per satu."
+    "hint": "Biasanya biarkan nilai bawaan. Panduan mengatur pengaruh instruksi; kontrol lain mengubah cara model membentuk suara. Ubah satu per satu.",
+    "pauses_hint": "Menambahkan jeda pada baris kosong. 0 mempertahankan tempo bawaan mesin."
   },
   "languagePicker": {
     "dialectFollowsVoice": "{{model}} hanya punya satu model {{language}}, jadi aksennya mengikuti suara referensi.",

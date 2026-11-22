@@ -2251,6 +2251,10 @@
     "dubbing_cta": "Kör detta på din egen video →",
     "dubbing_loading": "Laddar dubbningsdemo...",
     "dubbing_dismiss": "Avvisa dubbningsdemon",
+    "dubbing_download": "Ladda ner demovideor (~10 MB)",
+    "dubbing_downloading": "Laddar ner…",
+    "dubbing_download_failed": "Nedladdningen misslyckades. Kontrollera anslutningen.",
+    "dubbing_retry": "Försök igen",
     "original_tag": "original",
     "dubbed_tag": "dubbat",
     "script_conversational": "Konversation",
@@ -3355,7 +3359,8 @@
     "denoise": "Ta bort brus från referensen",
     "polish": "Förfina genererat ljud",
     "basics": "1× är normal hastighet. Lämna längden tom för naturlig timing.",
-    "hint": "Behåll vanligtvis standardvärdena. Vägledning styr instruktionens påverkan; övriga reglage ändrar hur modellen bygger ljudet. Ändra ett i taget."
+    "hint": "Behåll vanligtvis standardvärdena. Vägledning styr instruktionens påverkan; övriga reglage ändrar hur modellen bygger ljudet. Ändra ett i taget.",
+    "pauses_hint": "Lägger till tystnad vid tomma rader. 0 behåller motorns eget tempo."
   },
   "languagePicker": {
     "dialectFollowsVoice": "{{model}} har en enda modell för {{language}}, så accenten följer referensrösten.",
