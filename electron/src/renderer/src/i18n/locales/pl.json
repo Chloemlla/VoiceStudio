@@ -1638,7 +1638,8 @@
     "open": "Otworzyć „{{name}}” i zastąpić bieżący szkic? Najpierw zapisz swoją pracę.",
     "save_copy": "Zapisz kopię",
     "new": "Nowy projekt",
-    "new_confirm": "Rozpocząć nowy, pusty projekt? Zapisane projekty pozostaną bez zmian; niezapisane zmiany w bieżącym szkicu zostaną utracone."
+    "new_confirm": "Rozpocząć nowy, pusty projekt? Zapisane projekty pozostaną bez zmian; niezapisane zmiany w bieżącym szkicu zostaną utracone.",
+    "delete_hint": "Z listy usuwany jest tylko zapisany projekt. Pliki multimedialne i głosy są zachowane."
   },
   "sidebar": {
     "save_project": "Zapisz projekt dubowy",
@@ -2968,7 +2969,8 @@
     "missingSpeech": "Brak mowy lub nie można jej odczytać. Przed eksportem wygeneruj ponownie dany segment.",
     "timingOverflow": "Mowa przekracza przydzielony czas. Skróć tłumaczenie albo wybierz ścisły przedział czasu lub wydłużenie filmu.",
     "sourceChanged": "Napisy zmieniły się podczas generowania tego dubbingu. Poprzednią ścieżkę zachowano; wygeneruj ponownie, aby użyć nowych napisów.",
-    "backgroundUnavailable": "Nie udało się zachować oryginalnego dźwięku. Sprawdź oddzielenie tła i czasy dialogów, a następnie spróbuj ponownie lub wybierz eksport samej mowy."
+    "backgroundUnavailable": "Nie udało się zachować oryginalnego dźwięku. Sprawdź oddzielenie tła i czasy dialogów, a następnie spróbuj ponownie lub wybierz eksport samej mowy.",
+    "untranslated": "Ta ścieżka nie ma jeszcze tłumaczenia: wszystkie linie nadal są takie same jak tekst źródłowy. Przetłumacz ją lub wybierz język źródłowy, a potem wygeneruj ponownie."
   },
   "dubStyle": {
     "label": "Instrukcje stylu tłumaczenia",

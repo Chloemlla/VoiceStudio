@@ -1626,7 +1626,8 @@
     "open": "Ouvrir « {{name}} » et remplacer le brouillon actuel ? Enregistrez votre travail au préalable.",
     "save_copy": "Enregistrer une copie",
     "new": "Nouveau projet",
-    "new_confirm": "Commencer un nouveau projet vide ? Les projets enregistrés restent intacts ; les modifications non enregistrées du brouillon actuel seront perdues."
+    "new_confirm": "Commencer un nouveau projet vide ? Les projets enregistrés restent intacts ; les modifications non enregistrées du brouillon actuel seront perdues.",
+    "delete_hint": "Seul le projet enregistré est retiré de la liste. Les fichiers multimédias et les voix sont conservés."
   },
   "sidebar": {
     "save_project": "Enregistrer le projet de doublage",
@@ -2944,7 +2945,8 @@
     "missingSpeech": "La parole est absente ou illisible. Régénérez le segment concerné avant l’exportation.",
     "timingOverflow": "La parole dépasse son créneau. Raccourcissez la traduction ou choisissez un créneau strict ou l’étirement vidéo.",
     "sourceChanged": "Les sous-titres ont changé pendant la génération de ce doublage. La piste précédente a été conservée ; relancez la génération pour utiliser les nouveaux sous-titres.",
-    "backgroundUnavailable": "Le son original n’a pas pu être préservé. Vérifiez la séparation du fond et les temps du dialogue, puis réessayez, ou exportez explicitement la voix seule."
+    "backgroundUnavailable": "Le son original n’a pas pu être préservé. Vérifiez la séparation du fond et les temps du dialogue, puis réessayez, ou exportez explicitement la voix seule.",
+    "untranslated": "Cette piste n'a pas encore de traduction : toutes les lignes sont identiques au texte source. Traduisez-la ou choisissez la langue source, puis relancez la génération."
   },
   "dubStyle": {
     "label": "Consignes de style de traduction",

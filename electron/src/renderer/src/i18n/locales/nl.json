@@ -1624,7 +1624,8 @@
     "open": "‘{{name}}’ openen en het huidige concept vervangen? Sla je werk eerst op.",
     "save_copy": "Kopie opslaan",
     "new": "Nieuw project",
-    "new_confirm": "Een nieuw, leeg project beginnen? Opgeslagen projecten blijven ongewijzigd; niet-opgeslagen wijzigingen in het huidige concept gaan verloren."
+    "new_confirm": "Een nieuw, leeg project beginnen? Opgeslagen projecten blijven ongewijzigd; niet-opgeslagen wijzigingen in het huidige concept gaan verloren.",
+    "delete_hint": "Alleen het opgeslagen project wordt uit de lijst verwijderd. Mediabestanden en stemmen blijven behouden."
   },
   "sidebar": {
     "save_project": "Dub-project opslaan",
@@ -2942,7 +2943,8 @@
     "missingSpeech": "Spraak ontbreekt of is onleesbaar. Genereer het betreffende segment opnieuw voordat je exporteert.",
     "timingOverflow": "De spraak overschrijdt het tijdvak. Verkort de vertaling of kies een strikt tijdvak of het uitrekken van de video.",
     "sourceChanged": "De ondertitels zijn gewijzigd terwijl deze nasynchronisatie werd gemaakt. Het vorige spoor is behouden; genereer opnieuw om de nieuwe ondertitels te gebruiken.",
-    "backgroundUnavailable": "Het oorspronkelijke geluid kon niet behouden blijven. Controleer de achtergrondscheiding en dialoogtijden en probeer opnieuw, of kies expliciet voor alleen spraak exporteren."
+    "backgroundUnavailable": "Het oorspronkelijke geluid kon niet behouden blijven. Controleer de achtergrondscheiding en dialoogtijden en probeer opnieuw, of kies expliciet voor alleen spraak exporteren.",
+    "untranslated": "Dit spoor heeft nog geen vertaling: alle regels komen nog overeen met de brontekst. Vertaal het of kies de brontaal en genereer opnieuw."
   },
   "dubStyle": {
     "label": "Instructies voor vertaalstijl",
