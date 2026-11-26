@@ -1024,7 +1024,9 @@
     "body_required": false,
     "encoding": "",
     "fields": [],
-    "query": [],
+    "query": [
+      "text_limit"
+    ],
     "required": [],
     "required_query": []
   },
@@ -1351,7 +1353,8 @@
     "encoding": "",
     "fields": [],
     "query": [
-      "profile_id"
+      "profile_id",
+      "format"
     ],
     "required": [],
     "required_query": []
