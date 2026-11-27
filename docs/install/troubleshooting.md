@@ -97,7 +97,7 @@ interrupted wheel is kept incomplete rather than published as a finished file.
 
 ### `RUNTIME_DOWNLOAD_INTERRUPTED`
 
-The connection dropped during a runtime download, as in `peer closed connection without sending TLS close_notify`. Retry keeps finished packages and resumes large multi-connection downloads, but other partial downloads start again. The same advice as `RUNTIME_DOWNLOAD_STALLED` applies if it repeats.
+The connection dropped during a runtime download, as in `peer closed connection without sending TLS close_notify`. Retry keeps finished packages and resumes large multi-connection downloads, but other partial downloads start again. The same advice as `RUNTIME_DOWNLOAD_STALLED` applies if it repeats. The setup screen names the host that could not be reached: when it is `github.com`, choose the China, Russia or Restricted download region so GitHub downloads go through its proxy.
 
 ### `DISK_FULL`
 
@@ -138,6 +138,8 @@ The managed Python environment is damaged and automatic repair did not fix it. U
 The engine crashed below Python (`0xC0000005` or `SIGSEGV`). Update your GPU driver and try CPU mode. Send the in-app report if it persists. On Windows the report names the library that crashed (see [Native backend crashes in Electron](#native-backend-crashes-in-electron)); when it is the graphics driver, the screen says so.
 
 A crash inside the model weight loader (`transformers/core_model_loading.py` in the crashed thread, seen on some Windows machines) is avoided on Windows by default: the backend loads weights one at a time (`HF_DEACTIVATE_ASYNC_LOAD=1`), which only makes loading slower. Set `HF_DEACTIVATE_ASYNC_LOAD=0` to opt back in to threaded loading. On macOS and Linux the same setting is applied automatically, for later starts of the same version, after such a crash.
+
+On Windows the backend also reads model weights with ordinary file reads (safetensors' `pread`) instead of memory-mapping them, because the first read through the memory map can crash the same way (`torch/storage.py` in the crashed thread). It reads the same bytes. Set `OMNIVOICE_SAFETENSORS_PREAD=0` to go back to memory-mapped reads.
 
 ### `NATIVE_ILLEGAL_INSTRUCTION`
 
@@ -1340,8 +1342,12 @@ stall or fail while downloading the managed Python (the setup screen shows
 `cpython-3.11.… (download)`). With the download region on **Auto-detect**,
 setup retries a failed or stalled Python download once from the other source
 (GitHub ↔ the `gh-proxy.com` mirror) and notes the switch in the setup log; a
-region you picked, or your own `UV_PYTHON_INSTALL_MIRROR`, is kept as is. If
-both fail:
+region you picked, or your own `UV_PYTHON_INSTALL_MIRROR`, is kept as is.
+Whenever the Python downloads through `gh-proxy.com` (the China, Russia or
+Restricted region, or Auto-detect after GitHub failed), the two packages that
+exist only as GitHub release wheels (`kittentts` and `en-core-web-sm`) download
+through it too, still checked against their `uv.lock` hashes (#4502). If both
+fail:
 
 1. **Choose the Russia or Restricted download region** under **Options** on the
    setup screen and press Retry: both start from the mirror.
@@ -1830,6 +1836,10 @@ Accept it in the dialog that appears, or in **Model Manager → the model's
 Licence icon**. Nothing is re-downloaded. Headless and API users can accept with
 `POST /models/licenses/accept`; see
 [Licence acceptance before use](../licensing/model-review-workflow.md#licence-acceptance-before-use).
+
+OmniVoice checks whether the installed checkpoint contains its own audio
+tokenizer. A separate Higgs tokenizer acknowledgement is required when that
+checkpoint needs to load the fallback tokenizer.
 
 ### Setup stops at `VOICESTUDIO_CUDNN8_PROBE` on a CPU-only computer
 
